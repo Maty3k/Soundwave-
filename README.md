@@ -1,2 +1,105 @@
-# Soundwave-
-Track down mystery beeps by following warmer and colder readings.
+# Soundwave
+
+**Follow the beep.**
+
+Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, so Soundwave does not point an arrow. It plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around.
+
+Everything runs in your browser. Audio is analysed live and never recorded, stored or uploaded, and the page makes no network requests after it has loaded.
+
+## How to use it
+
+1. Tap **Start listening** and allow the microphone.
+2. Wait for one chirp. Soundwave shows the frequency it locked onto, for example 3,120 Hz. Tap **Not it** if that was the wrong sound.
+3. Stand still until the next chirp. Read the verdict: **WARMER**, **COLDER** or **ABOUT THE SAME**, with the change in dB and a 0–100 meter relative to your best reading so far.
+4. Move 2–3 m and wait again. A countdown shows when the next chirp is due and asks you to hold still for the last few seconds.
+5. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen.
+
+Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means you are probably within arm's reach. Smoke detectors live on ceilings.
+
+## Browser support
+
+| Browser | Status |
+|---|---|
+| Chrome on Android | Primary target, including vibration |
+| Chrome, Edge, Firefox on desktop | Supported |
+| Safari on macOS | Supported, but Safari cannot switch off automatic gain control or noise suppression, so readings are less precise. The app shows a notice. Not tested yet. |
+| Safari on iPhone | Best effort: no vibration, and listening pauses when you switch apps |
+
+The microphone only works in a secure context: `https://…` or a `localhost` address.
+
+### Why the audio processing is switched off
+
+Soundwave asks the browser for the microphone with `echoCancellation`, `noiseSuppression` and `autoGainControl` all set to `false`. With automatic gain control on, the browser would turn quiet chirps up and loud chirps down, which destroys exactly the loudness difference the hot/cold meter depends on. The app checks what the browser actually applied and warns when it could not switch processing off.
+
+## Development
+
+Requires Node 24 or newer. On this project's Windows machine Node comes from Laravel Herd's bundled nvm.
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | Dev server with hot reload at `http://localhost:5173/` |
+| `npm run build` | Typecheck and production build into `dist/` |
+| `npm run build:watch` | Rebuild `dist/` on every change (keeps the Herd site current) |
+| `npm test` | Unit tests (Vitest, Node environment) |
+| `npm run typecheck` | TypeScript only |
+| `npm run chirps` | Write test-signal WAVs into `public/dev/` |
+
+### Laravel Herd
+
+Herd serves the production build in `dist/` through two links:
+
+- `http://soundwave.localhost`: browsers treat `*.localhost` as a secure context, so the microphone works without any certificate.
+- `http://soundwave.test`: the microphone is blocked on plain HTTP. Run `herd secure soundwave` once to get `https://soundwave.test`; it asks Windows for admin approval to trust Herd's local certificate authority.
+
+The links are directory junctions in `%USERPROFILE%\.config\herd\config\valet\Sites` pointing at `dist/`, because `herd link` needs admin rights for symbolic links on this machine. Rebuild with `npm run build` to update what Herd serves.
+
+### Test signals
+
+`npm run chirps` writes these files into `public/dev/`. Play one from another device, or open it from the dev server at `/dev/<name>.wav`.
+
+| File | Signal |
+|---|---|
+| `chirp-10s.wav` | 3.1 kHz, 150 ms chirp every 10 s at a constant level |
+| `walk-10s.wav` | Same, with levels that simulate walking: warmer, warmer, colder, … |
+| `ups-30s.wav` | UPS style: 4 beeps 1 s apart, every 30 s, at 2.4 kHz |
+| `tone-2k.wav` | Continuous 2 kHz tone for 20 s (live mode) |
+
+For custom signals, see the options documented at the top of `tools/make-chirp-wav.mjs`.
+
+### Testing on an Android phone
+
+Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN access, so use USB:
+
+1. Enable USB debugging on the phone and plug it in.
+2. In desktop Chrome open `chrome://inspect/#devices`, enable port forwarding and map port `5173` to `localhost:5173`.
+3. Run `npm run dev` and open `http://localhost:5173/` on the phone. This counts as a secure context.
+
+### Debug flags
+
+- `?debug` shows a diagnostics panel: microphone settings, sample rates, locked frequency, live level, noise floor, SNR and the last chirps.
+- `?warmth=1` forces the maximum click rate while hunting. It is used to check that the app's own clicks do not register as chirps.
+
+### Tuning
+
+Every threshold lives in `src/config.ts` and every user-facing string in `src/copy.ts`. The signal-processing thresholds were calibrated against two hours of synthetic noise through a reference copy of the browser's analyser (`src/dsp/synth.ts`). Field tuning with a real detector should change only those two files; the unit tests import their thresholds from the config.
+
+## Project layout
+
+```
+src/
+  main.ts          wiring: Start gesture, audio context, frames, render loop
+  config.ts        every tunable constant
+  types.ts         shared types
+  app.ts           pure state machine and store
+  copy.ts          all user-facing text
+  ui.ts, style.css DOM rendering and styles
+  platform.ts      capabilities, wake lock, haptics, settings storage
+  audio/           microphone, analyser loop, Geiger clicker (browser code)
+  dsp/             pure signal processing: spectrum, detection, hunting, click maths, test harness
+tools/make-chirp-wav.mjs   test-signal generator
+docs/PLAN.md               design plan and decisions
+```
+
+## Deployment
+
+`.github/workflows/deploy-pages.yml` builds, tests and publishes to GitHub Pages on every push to `main`. Before the first push, set the repository's Settings → Pages → Source to "GitHub Actions". The build uses a relative base path, so the same `dist/` works on Herd and under `/Soundwave-/` on Pages.
