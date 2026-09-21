@@ -194,3 +194,11 @@ export function locatePeak(db: Float32Array, expectedBin: number, tolBins: numbe
   const p = parabolicPeak(db[k - 1]!, db[k]!, db[k + 1]!)
   return { bin: k, binF: k + p.delta, peakDb: p.peakDb }
 }
+
+/**
+ * Acceptance window around a locked frequency, in bins: max(tolPct % of f0, minBins).
+ * Used by detection (matching sightings, exclusions) and hunting (locating the peak near f0).
+ */
+export function lockToleranceBins(f0Hz: number, binWidthHz: number, tolPct: number, minBins: number): number {
+  return Math.max((f0Hz * tolPct) / 100 / binWidthHz, minBins)
+}

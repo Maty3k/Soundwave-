@@ -10,6 +10,7 @@ import {
   hzToBin,
   localFloorDb,
   locatePeak,
+  lockToleranceBins,
   measureBandAt,
   median,
   parabolicPeak,
@@ -271,5 +272,13 @@ describe('time-domain helpers', () => {
   it('rmsDb is 20*log10(rms) and SILENT_DB for silence', () => {
     expect(rmsDb(new Float32Array([0.5, -0.5, 0.5, -0.5]))).toBeCloseTo(-6.0206, 3)
     expect(rmsDb(new Float32Array(16))).toBe(SILENT_DB)
+  })
+})
+
+describe('lockToleranceBins', () => {
+  it('is 3 % of f0 but never below the minimum bin count', () => {
+    const bw = 48000 / 4096
+    expect(lockToleranceBins(3120, bw, 3, 3)).toBeCloseTo((3120 * 0.03) / bw, 9)
+    expect(lockToleranceBins(500, bw, 3, 3)).toBe(3)
   })
 })
