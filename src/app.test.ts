@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createStore, initialState, reduce, SCAN_CLOSED } from './app.ts'
+import { createStore, initialState, reduce, SCAN_CLOSED, STATION_INITIAL, toastDurationMs, TOAST_MAX_MS } from './app.ts'
 import { CONFIG, withConfig } from './config.ts'
 import type {
   AppEvent,
@@ -7,11 +7,15 @@ import type {
   Capabilities,
   HuntView,
   Lock,
+  LogEntry,
   MicDiag,
+  PendingBeep,
   RadarView,
   Reading,
   Screen,
   Settings,
+  StationModeView,
+  StationsView,
 } from './types.ts'
 
 // ---- Hand-built fixtures -------------------------------------------------------------------------
@@ -79,15 +83,50 @@ const HUNT_AT = huntView(CONFIG.stopConfirmMinReadings)
 
 const BASE = initialState(CAPS, SETTINGS, false, NOW)
 
+const PENDING: PendingBeep = { f0Hz: 3120, snrDb: 16, heardAtMs: 45_000, sightings: 1 }
+
+function logEntry(id: number, note = ''): LogEntry {
+  return {
+    id,
+    wallMs: 1_700_000_000_000 + id * 30_000,
+    verdict: id === 0 ? 'first' : 'warmer',
+    deltaPrevDb: id === 0 ? null : 2,
+    pct: id === 0 ? null : 60,
+    levelDb: -60 + id,
+    f0Hz: 3120,
+    clipped: false,
+    chirpCount: 1,
+    source: 'chirp',
+    loudest: null,
+    note,
+  }
+}
+
+const LOG2: readonly LogEntry[] = [logEntry(0, 'hall'), logEntry(1)]
+
+const STATIONS: StationsView = {
+  listeners: [
+    { id: 'self', name: 'This phone', kind: 'self', status: 'listening', levelDb: null, deltaDb: null, isLoudest: false, offsetDb: 0, lastSeenMs: null },
+  ],
+  availableMics: [],
+  pairing: { step: 'idle', offerCode: null, message: null, canScan: false },
+  comparison: null,
+  calibrating: false,
+}
+
+const STATION_VIEW: StationModeView = { ...STATION_INITIAL, step: 'connected', name: 'Kitchen', f0Hz: 3120, chirpsSent: 2 }
+
 /** A state on the given screen with session data consistent with it. */
 function on(screen: Screen, patch: Partial<AppState> = {}): AppState {
   const phase = screen.kind === 'paused' ? screen.from : screen.kind
   const session: Partial<AppState> =
     phase === 'idle' || phase === 'requesting' || phase === 'error'
       ? {}
-      : phase === 'listening'
-        ? { mic: MIC, micLevel: 0.4 }
-        : { mic: MIC, micLevel: 0.4, lock: LOCK, hunt: HUNT1 }
+      : phase === 'station'
+        ? { stationMode: STATION_VIEW }
+        : phase === 'listening'
+          ? { mic: MIC, micLevel: 0.4 }
+          : { mic: MIC, micLevel: 0.4, lock: LOCK, hunt: HUNT1 }
   return { ...BASE, ...session, ...patch, screen }
 }
 
@@ -102,13 +141,25 @@ const S = {
   pausedLocked: { kind: 'paused', from: 'locked', needsGesture: false },
   pausedGesture: { kind: 'paused', from: 'hunting', needsGesture: true },
   error: { kind: 'error', code: 'permission' },
+  lockedHeld: { kind: 'locked', sinceMs: T0, held: true },
+  station: { kind: 'station' },
 } as const satisfies Record<string, Screen>
 
 const T1 = NOW + 7_000
 const V2 = huntView(2)
 
-/** Session fields reset by stop / back. */
-const CLEARED: Partial<AppState> = { mic: null, lock: null, hunt: null, micLevel: 0, confirmStop: false }
+/** Session fields reset by stop / back (a new hunt starts a new log). */
+const CLEARED: Partial<AppState> = {
+  mic: null,
+  lock: null,
+  hunt: null,
+  micLevel: 0,
+  confirmStop: false,
+  pending: null,
+  panel: 'meter',
+  log: [],
+  stationMode: null,
+}
 
 // ---- Transition table ----------------------------------------------------------------------------
 
@@ -200,14 +251,81 @@ const TABLE: readonly Row[] = [
     expect: { nowMs: T1, micLevel: 1 } },
   { name: 'tick maps a NaN mic level to 0', from: on(S.listening), event: { type: 'tick', nowMs: T1, micLevel: Number.NaN },
     expect: { nowMs: T1, micLevel: 0 } },
-  { name: 'toast shows for toastMs', from: on(S.hunting), event: { type: 'toast', text: 'Back to chirp mode.', nowMs: T1 },
-    expect: { nowMs: T1, toast: { text: 'Back to chirp mode.', untilMs: T1 + CONFIG.toastMs } } },
+  { name: 'toast shows for a time that grows with its length', from: on(S.hunting), event: { type: 'toast', text: 'Back to chirp mode.', nowMs: T1 },
+    expect: { nowMs: T1, toast: { text: 'Back to chirp mode.', untilMs: T1 + 2_000 + 55 * 19 } } },
   { name: 'toast replaces a visible toast', from: on(S.idle, { toast: { text: 'old', untilMs: T1 + 1 } }), event: { type: 'toast', text: 'new', nowMs: T1 },
-    expect: { nowMs: T1, toast: { text: 'new', untilMs: T1 + CONFIG.toastMs } } },
+    expect: { nowMs: T1, toast: { text: 'new', untilMs: T1 + 2_000 + 55 * 3 } } },
   { name: 'settings patch is merged', from: on(S.hunting), event: { type: 'settings', patch: { clicks: false } },
     expect: { settings: { clicks: false, haptics: true } } },
   { name: 'wakeLockFailed sets the flag', from: on(S.hunting), event: { type: 'wakeLockFailed' },
     expect: { wakeLockFailed: true } },
+
+  // Locked banner: a touch holds it.
+  { name: 'locked --holdLock--> locked and held', from: on(S.locked), event: { type: 'holdLock' },
+    expect: { screen: { kind: 'locked', sinceMs: T0, held: true } } },
+  { name: 'held locked --confirmLock--> hunting', from: on(S.lockedHeld), event: { type: 'confirmLock' },
+    expect: { screen: { kind: 'hunting' } } },
+  { name: 'held locked --notIt--> listening', from: on(S.lockedHeld), event: { type: 'notIt', nowMs: T1 },
+    expect: { nowMs: T1, screen: { kind: 'listening', sinceMs: T1 }, lock: null, hunt: null } },
+
+  // Pending beep while listening.
+  { name: 'listening --pending--> listening with the pending beep', from: on(S.listening), event: { type: 'pending', pending: PENDING },
+    expect: { pending: PENDING } },
+  { name: 'listening --pending(null)--> pending cleared', from: on(S.listening, { pending: PENDING }), event: { type: 'pending', pending: null },
+    expect: { pending: null } },
+  { name: 'listening --lock--> locked, pending cleared', from: on(S.listening, { pending: PENDING }), event: { type: 'lock', lock: LOCK, nowMs: T1 },
+    expect: { nowMs: T1, screen: { kind: 'locked', sinceMs: T1 }, lock: LOCK, pending: null } },
+  { name: 'listening --stopRequest--> idle, pending cleared', from: on(S.listening, { pending: PENDING }), event: { type: 'stopRequest' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
+  { name: 'locked --notIt--> listening, pending cleared', from: on(S.locked, { pending: PENDING }), event: { type: 'notIt', nowMs: T1 },
+    expect: { nowMs: T1, screen: { kind: 'listening', sinceMs: T1 }, lock: null, hunt: null, pending: null } },
+  { name: 'hunting --relisten--> listening, pending cleared', from: on(S.hunting, { pending: PENDING }), event: { type: 'relisten', nowMs: T1 },
+    expect: { nowMs: T1, screen: { kind: 'listening', sinceMs: T1 }, lock: null, hunt: null, pending: null } },
+
+  // Hunting panel.
+  { name: 'hunting --panel(log)--> log panel', from: on(S.hunting), event: { type: 'panel', panel: 'log' },
+    expect: { panel: 'log' } },
+  { name: 'hunting --panel(stations)--> stations panel', from: on(S.hunting, { panel: 'log' }), event: { type: 'panel', panel: 'stations' },
+    expect: { panel: 'stations' } },
+  { name: 'hunting --panel(direction)--> direction panel with a compass', from: on(S.hunting), event: { type: 'panel', panel: 'direction' },
+    expect: { panel: 'direction' } },
+  { name: 'hunting --panel(meter)--> back to the meter', from: on(S.hunting, { panel: 'direction' }), event: { type: 'panel', panel: 'meter' },
+    expect: { panel: 'meter' } },
+  { name: 'hunting --relisten--> listening, panel back to the meter, log kept', from: on(S.hunting, { panel: 'log', log: LOG2 }),
+    event: { type: 'relisten', nowMs: T1 },
+    expect: { nowMs: T1, screen: { kind: 'listening', sinceMs: T1 }, lock: null, hunt: null, panel: 'meter' } },
+  { name: 'hunting --stopRequest--> idle, panel back to the meter, log cleared', from: on(S.hunting, { panel: 'stations', log: LOG2 }),
+    event: { type: 'stopRequest' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
+  { name: 'confirmStop --stopConfirm--> idle, log cleared', from: on(S.hunting, { hunt: HUNT_AT, confirmStop: true, log: LOG2, panel: 'log' }),
+    event: { type: 'stopConfirm' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
+
+  // Log.
+  { name: 'hunting --logUpsert(new)--> appended', from: on(S.hunting, { log: LOG2 }), event: { type: 'logUpsert', entry: logEntry(2) },
+    expect: { log: [...LOG2, logEntry(2)] } },
+  { name: 'locked --logUpsert--> appended (sightings become readings)', from: on(S.locked), event: { type: 'logUpsert', entry: logEntry(0) },
+    expect: { log: [logEntry(0)] } },
+  { name: 'hunting --logUpsert(same id)--> replaced in place, note kept', from: on(S.hunting, { log: LOG2 }),
+    event: { type: 'logUpsert', entry: { ...logEntry(0), levelDb: -40, chirpCount: 2 } },
+    expect: { log: [{ ...logEntry(0, 'hall'), levelDb: -40, chirpCount: 2 }, logEntry(1)] } },
+  { name: 'hunting --logNote--> note set on its entry', from: on(S.hunting, { log: LOG2 }), event: { type: 'logNote', id: 1, note: 'by the fridge' },
+    expect: { log: [logEntry(0, 'hall'), logEntry(1, 'by the fridge')] } },
+  { name: 'listening --logNote--> a note can still be edited after Listen again', from: on(S.listening, { log: LOG2 }),
+    event: { type: 'logNote', id: 0, note: '' },
+    expect: { log: [logEntry(0), logEntry(1)] } },
+
+  // Stations (hub side) and station mode (this device is a station).
+  { name: 'hunting --stations--> stations view stored', from: on(S.hunting), event: { type: 'stations', view: STATIONS },
+    expect: { stations: STATIONS } },
+  { name: 'idle --stations(null)--> stations view cleared', from: on(S.idle, { stations: STATIONS }), event: { type: 'stations', view: null },
+    expect: { stations: null } },
+  { name: 'idle --stationStart--> station screen with the initial view', from: on(S.idle), event: { type: 'stationStart' },
+    expect: { screen: { kind: 'station' }, stationMode: STATION_INITIAL } },
+  { name: 'station --stationView--> view stored', from: on(S.station), event: { type: 'stationView', view: { ...STATION_VIEW, chirpsSent: 3 } },
+    expect: { stationMode: { ...STATION_VIEW, chirpsSent: 3 } } },
+  { name: 'station --stationStop--> idle without a station view', from: on(S.station), event: { type: 'stationStop' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
 ]
 
 describe('reduce: transition table', () => {
@@ -277,20 +395,29 @@ const SCREEN_EVENTS: readonly AppEvent[] = [
   { type: 'resumed' },
   { type: 'retry', nowMs: T1 },
   { type: 'back' },
+  { type: 'holdLock' },
+  { type: 'pending', pending: PENDING },
+  { type: 'panel', panel: 'log' },
+  { type: 'logUpsert', entry: logEntry(7) },
+  { type: 'stationStart' },
+  { type: 'stationView', view: STATION_INITIAL },
+  { type: 'stationStop' },
 ]
 
 /** Event labels ('visible' split by health) that change each fixture; all others must be no-ops. */
 const APPLIES: ReadonlyArray<readonly [string, AppState, readonly string[]]> = [
-  ['idle', on(S.idle), ['start']],
+  ['idle', on(S.idle), ['start', 'stationStart']],
   ['requesting', on(S.requesting), ['micReady', 'micError', 'stopRequest']],
-  ['listening', on(S.listening), ['lock', 'stopRequest', 'hidden', 'micLost']],
-  ['locked', on(S.locked), ['confirmLock', 'notIt', 'hunt', 'stopRequest', 'hidden', 'micLost']],
-  ['hunting', on(S.hunting), ['hunt', 'relisten', 'stopRequest', 'hidden', 'micLost']],
+  ['listening', on(S.listening), ['lock', 'stopRequest', 'hidden', 'micLost', 'pending']],
+  ['locked', on(S.locked), ['confirmLock', 'notIt', 'hunt', 'stopRequest', 'hidden', 'micLost', 'holdLock', 'logUpsert']],
+  ['locked, held', on(S.lockedHeld), ['confirmLock', 'notIt', 'hunt', 'stopRequest', 'hidden', 'micLost', 'logUpsert']],
+  ['hunting', on(S.hunting), ['hunt', 'relisten', 'stopRequest', 'hidden', 'micLost', 'panel', 'logUpsert']],
   ['hunting, confirm open', on(S.hunting, { hunt: HUNT_AT, confirmStop: true }),
-    ['hunt', 'relisten', 'stopConfirm', 'stopCancel', 'hidden', 'micLost']],
+    ['hunt', 'relisten', 'stopConfirm', 'stopCancel', 'hidden', 'micLost', 'panel', 'logUpsert']],
   ['paused', on(S.pausedHunting), ['micError', 'visible:healthy', 'visible:unhealthy', 'micLost', 'resumed', 'stopRequest']],
   ['paused, needs gesture', on(S.pausedGesture), ['micError', 'visible:healthy', 'resumed', 'stopRequest']],
   ['error', on(S.error), ['retry', 'back']],
+  ['station', on(S.station), ['stationView', 'stationStop']],
 ]
 
 function label(e: AppEvent): string {
@@ -406,17 +533,45 @@ describe('reduce: tick timers', () => {
 
   it('clears a toast when untilMs <= nowMs and keeps it before', () => {
     let s = reduce(on(S.hunting), { type: 'toast', text: 'Back to chirp mode.', nowMs: T1 }, CONFIG)
-    const until = T1 + CONFIG.toastMs
+    const until = T1 + toastDurationMs('Back to chirp mode.')
     s = reduce(s, { type: 'tick', nowMs: until - 1 }, CONFIG)
     expect(s.toast).toEqual({ text: 'Back to chirp mode.', untilMs: until })
     s = reduce(s, { type: 'tick', nowMs: until }, CONFIG)
     expect(s.toast).toBeNull()
   })
 
-  it('uses the configured toast duration', () => {
-    const cfg = withConfig({ toastMs: 1_000 })
-    const s = reduce(on(S.idle), { type: 'toast', text: 'x', nowMs: T1 }, cfg)
-    expect(s.toast?.untilMs).toBe(T1 + 1_000)
+  it('gives a toast 2 s plus 55 ms per character, at most 10 s', () => {
+    expect(toastDurationMs('')).toBe(2_000)
+    expect(toastDurationMs('Link copied.')).toBe(2_000 + 55 * 12)
+    expect(toastDurationMs('x'.repeat(145))).toBe(9_975)
+    expect(toastDurationMs('x'.repeat(146))).toBe(TOAST_MAX_MS)
+    expect(toastDurationMs('x'.repeat(1_000))).toBe(10_000)
+    const long = 'Your screen may go dark while hunting. Tap it now and then to keep it on.'
+    const s = reduce(on(S.idle), { type: 'toast', text: long, nowMs: T1 }, CONFIG)
+    expect(s.toast?.untilMs).toBe(T1 + 2_000 + 55 * long.length)
+  })
+
+  it('does not advance a held banner, however long it stays', () => {
+    const held = reduce(on(S.locked), { type: 'holdLock' }, CONFIG)
+    expect(held.screen).toEqual({ kind: 'locked', sinceMs: T0, held: true })
+    const later = reduce(held, { type: 'tick', nowMs: T0 + 10 * CONFIG.lockedBannerMs }, CONFIG)
+    expect(later.screen).toBe(held.screen)
+    expect(later.nowMs).toBe(T0 + 10 * CONFIG.lockedBannerMs)
+    expect(reduce(later, { type: 'confirmLock' }, CONFIG).screen).toEqual({ kind: 'hunting' })
+  })
+
+  it('holdLock on a held banner or another screen is a no-op', () => {
+    const held = on(S.lockedHeld)
+    expect(reduce(held, { type: 'holdLock' }, CONFIG)).toBe(held)
+    for (const screen of [S.idle, S.listening, S.hunting, S.pausedHunting]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'holdLock' }, CONFIG)).toBe(s)
+    }
+  })
+
+  it('a banner restored from a pause is not held any more', () => {
+    const paused = reduce(on(S.lockedHeld), { type: 'hidden' }, CONFIG)
+    expect(paused.screen).toEqual({ kind: 'paused', from: 'hunting', needsGesture: false })
   })
 
   it('expires a toast and advances the banner in the same tick', () => {
@@ -445,7 +600,7 @@ describe('reduce: tick, toast, settings and wakeLockFailed apply on every screen
       expect(tick.micLevel).toBe(0.25)
 
       const toast = reduce(state, { type: 'toast', text: 'hello', nowMs: T1 }, CONFIG)
-      expect(toast.toast).toEqual({ text: 'hello', untilMs: T1 + CONFIG.toastMs })
+      expect(toast.toast).toEqual({ text: 'hello', untilMs: T1 + toastDurationMs('hello') })
       expect(toast.screen).toBe(state.screen)
 
       const settings = reduce(state, { type: 'settings', patch: { haptics: !state.settings.haptics } }, CONFIG)
@@ -454,8 +609,160 @@ describe('reduce: tick, toast, settings and wakeLockFailed apply on every screen
 
       const wake = reduce(state, { type: 'wakeLockFailed' }, CONFIG)
       expect(wake).toEqual({ ...state, wakeLockFailed: true })
+
+      const stations = reduce(state, { type: 'stations', view: STATIONS }, CONFIG)
+      expect(stations).toEqual({ ...state, stations: STATIONS })
+      expect(reduce(stations, { type: 'stations', view: STATIONS }, CONFIG)).toBe(stations)
     })
   }
+})
+
+// ---- Pending beep, panels, log and station mode --------------------------------------------------
+
+describe('reduce: pending beep', () => {
+  it('is only taken while listening, and a repeated one is a no-op', () => {
+    const s = reduce(on(S.listening), { type: 'pending', pending: PENDING }, CONFIG)
+    expect(reduce(s, { type: 'pending', pending: PENDING }, CONFIG)).toBe(s)
+    for (const screen of [S.idle, S.locked, S.hunting, S.pausedListening]) {
+      const other = on(screen)
+      expect(reduce(other, { type: 'pending', pending: PENDING }, CONFIG)).toBe(other)
+    }
+  })
+
+  it('survives a pause of the listening screen', () => {
+    const s = on(S.listening, { pending: PENDING })
+    const back = reduce(reduce(s, { type: 'hidden' }, CONFIG), { type: 'visible', healthy: true }, CONFIG)
+    expect(back.screen.kind).toBe('listening')
+    expect(back.pending).toBe(PENDING)
+  })
+})
+
+describe('reduce: hunting panel', () => {
+  it('starts on the meter', () => {
+    expect(BASE.panel).toBe('meter')
+  })
+
+  it('offers the direction panel only with a compass', () => {
+    const noCompass = on(S.hunting, { caps: { ...CAPS, compass: false } })
+    expect(reduce(noCompass, { type: 'panel', panel: 'direction' }, CONFIG)).toBe(noCompass)
+    expect(reduce(noCompass, { type: 'panel', panel: 'log' }, CONFIG).panel).toBe('log')
+  })
+
+  it('changes only on the hunting screen, and choosing the current panel is a no-op', () => {
+    const s = on(S.hunting, { panel: 'log' })
+    expect(reduce(s, { type: 'panel', panel: 'log' }, CONFIG)).toBe(s)
+    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting, S.station]) {
+      const other = on(screen)
+      expect(reduce(other, { type: 'panel', panel: 'stations' }, CONFIG)).toBe(other)
+    }
+  })
+
+  it('does not open or close the scan (main does)', () => {
+    const s = reduce(on(S.hunting), { type: 'panel', panel: 'direction' }, CONFIG)
+    expect(s.scan).toBe(SCAN_CLOSED)
+    const open = on(S.hunting, { panel: 'direction', scan: { open: true, status: 'active', radar: null } })
+    expect(reduce(open, { type: 'panel', panel: 'meter' }, CONFIG).scan).toBe(open.scan)
+  })
+
+  it('is kept across a pause and reset when the hunt ends', () => {
+    const s = on(S.hunting, { panel: 'stations' })
+    const paused = reduce(s, { type: 'micLost' }, CONFIG)
+    expect(paused.panel).toBe('stations')
+    expect(reduce(paused, { type: 'resumed' }, CONFIG).panel).toBe('stations')
+    expect(reduce(s, { type: 'relisten', nowMs: T1 }, CONFIG).panel).toBe('meter')
+    expect(reduce(s, { type: 'stopRequest' }, CONFIG).panel).toBe('meter')
+    expect(reduce(paused, { type: 'micError', code: 'busy' }, CONFIG).panel).toBe('meter')
+  })
+})
+
+describe('reduce: log', () => {
+  it('starts empty', () => {
+    expect(BASE.log).toEqual([])
+  })
+
+  it('takes entries only while locked or hunting', () => {
+    for (const screen of [S.idle, S.listening, S.pausedHunting, S.error, S.station]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'logUpsert', entry: logEntry(1) }, CONFIG)).toBe(s)
+    }
+  })
+
+  it('drops the oldest entries beyond logMaxEntries', () => {
+    const cfg = withConfig({ logMaxEntries: 3 })
+    let s = on(S.hunting)
+    for (let id = 0; id < 5; id++) s = reduce(s, { type: 'logUpsert', entry: logEntry(id) }, cfg)
+    expect(s.log.map((e) => e.id)).toEqual([2, 3, 4])
+    // An update of a kept entry stays in place and does not drop anything.
+    s = reduce(s, { type: 'logUpsert', entry: { ...logEntry(3), chirpCount: 2 } }, cfg)
+    expect(s.log.map((e) => [e.id, e.chirpCount])).toEqual([[2, 1], [3, 2], [4, 1]])
+  })
+
+  it('keeps the note of an updated entry even when the update carries another one', () => {
+    const s = on(S.hunting, { log: LOG2 })
+    const next = reduce(s, { type: 'logUpsert', entry: { ...logEntry(0), note: 'ignored', chirpCount: 3 } }, CONFIG)
+    expect(next.log[0]).toEqual({ ...logEntry(0, 'hall'), chirpCount: 3 })
+  })
+
+  it('appends in arrival order even when a new hunt restarts at a lower id', () => {
+    const s = on(S.hunting, { log: [logEntry(5), logEntry(6)] })
+    expect(reduce(s, { type: 'logUpsert', entry: logEntry(1) }, CONFIG).log.map((e) => e.id)).toEqual([5, 6, 1])
+  })
+
+  it('cuts notes to logNoteMaxLength without splitting an emoji', () => {
+    const cfg = withConfig({ logNoteMaxLength: 5 })
+    const s = on(S.hunting, { log: LOG2 })
+    expect(reduce(s, { type: 'logNote', id: 1, note: 'kitchen door' }, cfg).log[1]!.note).toBe('kitch')
+    expect(reduce(s, { type: 'logNote', id: 1, note: 'abcd\u{1F50A}x' }, cfg).log[1]!.note).toBe('abcd')
+    expect(reduce(s, { type: 'logNote', id: 1, note: 'ab\u{1F50A}x' }, cfg).log[1]!.note).toBe('ab\u{1F50A}x')
+    const long = 'x'.repeat(CONFIG.logNoteMaxLength + 10)
+    expect(reduce(s, { type: 'logNote', id: 1, note: long }, CONFIG).log[1]!.note).toHaveLength(CONFIG.logNoteMaxLength)
+  })
+
+  it('a note for an unknown entry, or the same note again, is a no-op', () => {
+    const s = on(S.hunting, { log: LOG2 })
+    expect(reduce(s, { type: 'logNote', id: 99, note: 'x' }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'logNote', id: 0, note: 'hall' }, CONFIG)).toBe(s)
+  })
+
+  it('is kept across Listen again and a pause, and cleared when the hunt stops', () => {
+    const s = on(S.hunting, { log: LOG2 })
+    expect(reduce(s, { type: 'relisten', nowMs: T1 }, CONFIG).log).toBe(LOG2)
+    expect(reduce(s, { type: 'hidden' }, CONFIG).log).toBe(LOG2)
+    expect(reduce(on(S.locked, { log: LOG2 }), { type: 'notIt', nowMs: T1 }, CONFIG).log).toBe(LOG2)
+    expect(reduce(s, { type: 'stopRequest' }, CONFIG).log).toEqual([])
+  })
+})
+
+describe('reduce: station mode', () => {
+  it('starts only from the landing screen', () => {
+    for (const screen of [S.requesting, S.listening, S.hunting, S.error]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'stationStart' }, CONFIG)).toBe(s)
+    }
+  })
+
+  it('takes views only on the station screen; the same view again is a no-op', () => {
+    const s = on(S.station)
+    expect(reduce(s, { type: 'stationView', view: STATION_VIEW }, CONFIG)).toBe(s)
+    const idle = on(S.idle)
+    expect(reduce(idle, { type: 'stationView', view: STATION_VIEW }, CONFIG)).toBe(idle)
+  })
+
+  it('is not paused by the page going to the background (the station keeps its own mic)', () => {
+    const s = on(S.station)
+    expect(reduce(s, { type: 'hidden' }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'micLost' }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'stopRequest' }, CONFIG)).toBe(s)
+  })
+
+  it('round-trips: landing, station, landing', () => {
+    let s = on(S.idle)
+    s = reduce(s, { type: 'stationStart' }, CONFIG)
+    s = reduce(s, { type: 'stationView', view: STATION_VIEW }, CONFIG)
+    expect(s.stationMode).toBe(STATION_VIEW)
+    s = reduce(s, { type: 'stationStop' }, CONFIG)
+    expect(s).toEqual(on(S.idle))
+  })
 })
 
 describe('reduce: settings', () => {

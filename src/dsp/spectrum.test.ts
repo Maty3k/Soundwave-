@@ -229,7 +229,7 @@ describe('measureBandAt on pure noise', () => {
     expect(median(snrs)).toBeGreaterThan(-1.5)
     expect(median(snrs)).toBeLessThan(0)
     expect(onsets).toBe(0)
-  })
+  }, 30_000) // 120 s of audio through the reference analyser: slow under full-suite load
 
   it('reports band SNR about 4 dB below the per-bin SNR of a steady tone', () => {
     const s = synthSignal({

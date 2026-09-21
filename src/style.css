@@ -1,7 +1,8 @@
 /*
  * Soundwave styles. Dark-first, one column, mobile shell.
- * Dynamic values come from ui.ts as custom properties: --pct and --ghost (0..100), --heat (colour),
- * --level (0..1 mic-alive bar) and --p (0..1 locked-banner progress).
+ * Dynamic values come from ui.ts as custom properties: --pct, --ghost and --best (0..100 meter
+ * positions), --slots (history slots), --level (0..1 mic-alive bar) and --p (0..1 locked-screen
+ * auto-advance, drawn inside Start hunting).
  */
 
 :root {
@@ -193,7 +194,8 @@ h1[tabindex='-1']:focus {
 /* ---- Buttons ----------------------------------------------------------------------------------- */
 
 .btn,
-.toggle {
+.toggle,
+.tab {
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
@@ -237,6 +239,23 @@ h1[tabindex='-1']:focus {
   border-color: var(--danger-line);
   background: transparent;
   color: var(--danger);
+}
+
+/* Quiet: a secondary action that sits beside content (Start over here, Clear scan). Still 48 px. */
+.btn-quiet {
+  padding-inline: 12px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn[aria-disabled='true']:active {
+  transform: none;
 }
 
 .actions {
@@ -441,6 +460,23 @@ h1[tabindex='-1']:focus {
   text-align: center;
 }
 
+/* Secondary way in: this device becomes a listening station for another phone's hunt. */
+.station-cta {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.station-btn {
+  width: 100%;
+}
+
+.station-btn .icon {
+  width: 20px;
+  height: 20px;
+  margin-top: 0;
+}
+
 /* ---- Requesting -------------------------------------------------------------------------------- */
 
 .requesting {
@@ -504,6 +540,17 @@ h1[tabindex='-1']:focus {
   justify-content: center;
   gap: 14px;
   text-align: center;
+}
+
+/* Ring, title, clock and mic bar; then the tip and the waiting-beep card (side by side in landscape). */
+.listening-status,
+.listening-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
 }
 
 .ring {
@@ -597,6 +644,49 @@ h1[tabindex='-1']:focus {
   background: var(--surface);
 }
 
+/* A beep heard once, waiting for the confirming chirp, with 'Use it now'. */
+.pending {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  width: min(100%, 420px);
+  padding: 14px;
+  border: 1px solid rgba(255, 138, 31, 0.45);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+}
+
+.pending-dot {
+  width: 12px;
+  height: 12px;
+  margin: 6px 2px 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px rgba(255, 138, 31, 0.2);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.pending-body {
+  display: grid;
+  gap: 2px;
+}
+
+.pending-text {
+  font-weight: 650;
+}
+
+.pending-seen {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.pending .btn {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
 /* ---- Locked ------------------------------------------------------------------------------------ */
 
 .locked {
@@ -631,46 +721,49 @@ h1[tabindex='-1']:focus {
   font-size: 1.125rem;
 }
 
-.advance {
-  width: min(100%, 240px);
-  height: 4px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--surface-2);
-}
-
-.advance-fill {
-  display: block;
-  width: 100%;
-  height: 100%;
-  background: var(--accent);
-  transform: scaleX(var(--p, 0));
-  transform-origin: left center;
-}
-
 .locked .actions {
   margin-top: 16px;
 }
 
+/* The automatic advance is drawn inside Start hunting: a darker band grows from the left (--p). */
+.locked .btn-progress {
+  background:
+    linear-gradient(90deg, rgba(27, 15, 3, 0.22) calc(var(--p, 0) * 100%), transparent 0),
+    var(--accent);
+}
+
+.auto-caption {
+  margin-top: -4px;
+}
+
 /* ---- Hunting ----------------------------------------------------------------------------------- */
+
+/*
+ * Top to bottom: top bar (one row), verdict hero, status bar ("what to do now"), tab row, the
+ * selected panel, sticky bottom bar. Landscape phones get a two-column grid (see the end).
+ */
 
 .hunting {
   gap: 14px;
 }
 
+/* Top bar: frequency, mode, Clicks, Vibrate. Never wraps (about 313 px of 328 at 360 px wide). */
 .topbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .topbar-spacer {
   flex: 1 1 0;
+  min-width: 0;
 }
 
 .chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
   min-height: 32px;
   padding: 4px 12px;
@@ -686,13 +779,14 @@ h1[tabindex='-1']:focus {
   color: var(--muted);
 }
 
+/* A static label, not a pressed toggle: orange text only. */
 .chip-mode[data-mode='live'] {
-  border-color: rgba(255, 138, 31, 0.55);
   color: var(--accent);
 }
 
 .toggle {
   display: inline-flex;
+  flex: none;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -709,10 +803,12 @@ h1[tabindex='-1']:focus {
   transition: background-color 0.15s, border-color 0.15s;
 }
 
+/* ON / OFF is the one state cue that does not rely on colour: make it readable. */
 .toggle-state {
   color: var(--muted);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -729,23 +825,33 @@ h1[tabindex='-1']:focus {
   color: var(--muted);
 }
 
+/* Hero: the verdict word is the biggest, steadiest thing on screen and never wraps. */
 .hero {
   display: grid;
   gap: 6px;
+  min-width: 0;
   padding-top: 4px;
+  transition: opacity 0.25s;
 }
 
 .verdict {
   color: var(--text);
-  font-size: clamp(40px, 12vw, 80px);
+  font-size: clamp(48px, 16vw, 104px);
   font-weight: 850;
   line-height: 1;
   letter-spacing: -0.02em;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
+  white-space: nowrap;
 }
 
-.hero[data-verdict='none'] .verdict {
+/* Longer words (FIRST READING, LISTENING, SCANNING) use the smaller size so they fit one line. */
+.hero[data-verdict='first'] .verdict,
+.hero[data-verdict='none'] .verdict,
+.hero[data-verdict='scanning'] .verdict {
+  font-size: clamp(36px, 11vw, 72px);
+}
+
+.hero[data-verdict='none'] .verdict,
+.hero[data-verdict='scanning'] .verdict {
   color: var(--muted);
 }
 
@@ -767,24 +873,221 @@ h1[tabindex='-1']:focus {
 
 .subline {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: baseline;
   gap: 4px 14px;
+  min-width: 0;
   min-height: 1.5em;
   color: var(--muted);
   font-size: 1.125rem;
+  white-space: nowrap;
 }
 
 .delta {
+  min-width: 0;
+  overflow: hidden;
   color: var(--text);
   font-weight: 650;
+  text-overflow: ellipsis;
 }
 
 .newbest {
+  flex: none;
   color: var(--accent);
   font-weight: 750;
 }
 
+/* While it says hold still, the last verdict is old news: dim it. */
+.hunting:has(.countdown[data-kind='hold']) .hero,
+.hunting:has(.countdown[data-kind='late']) .hero {
+  opacity: 0.45;
+}
+
+/* Status bar under the hero: move (quiet surface) or freeze (filled accent), fixed height. */
+.countdown {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 1.125rem;
+  font-weight: 650;
+  line-height: 1.2;
+  transition: background-color 0.2s;
+}
+
+.countdown-text {
+  min-width: 0;
+}
+
+.countdown[data-kind='hold'],
+.countdown[data-kind='late'] {
+  justify-content: center;
+  background: var(--accent);
+}
+
+/* accent-ink on accent is about 8:1. */
+.countdown[data-kind='hold'] .countdown-text,
+.countdown[data-kind='late'] .countdown-text {
+  color: var(--accent-ink);
+  font-size: 1.375rem;
+  font-weight: 800;
+}
+
+.countdown[data-kind='overdue'] .countdown-text,
+.countdown[data-kind='lost'] .countdown-text {
+  color: var(--warn);
+}
+
+/* Live mode, tone not heard: say so, quietly. */
+.countdown[data-kind='quiet'] .countdown-text {
+  color: var(--muted);
+}
+
+.hearing {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+.hearing-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(255, 138, 31, 0.25);
+  animation: blink 1s ease-in-out infinite;
+}
+
+.countdown[data-kind='hold'] .hearing,
+.countdown[data-kind='late'] .hearing {
+  color: var(--accent-ink);
+}
+
+.countdown[data-kind='hold'] .hearing-dot,
+.countdown[data-kind='late'] .hearing-dot {
+  background: var(--accent-ink);
+  box-shadow: 0 0 0 4px rgba(27, 15, 3, 0.2);
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/*
+ * Tab row (segmented control): one row of 48 px targets at 360 px. The selected tab is marked by
+ * a filled surface, bold text and an accent bar, not by colour alone.
+ */
+.tabs {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.tab + .tab {
+  border-left: 1px solid var(--line);
+}
+
+/* Reserve the bold width, so selecting a tab does not shift its neighbours. */
+.tab-label {
+  display: inline-grid;
+  min-width: 0;
+}
+
+.tab-label::after {
+  content: attr(data-label);
+  height: 0;
+  overflow: hidden;
+  font-weight: 800;
+  visibility: hidden;
+}
+
+.tab[aria-selected='true'] {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent);
+}
+
+.tab:focus-visible {
+  z-index: 1;
+  outline-offset: -3px;
+}
+
+.tab-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--line);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 20px;
+  text-align: center;
+}
+
+.tab[aria-selected='true'] .tab-badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Panel region under the tabs. */
+.panels {
+  display: grid;
+  min-width: 0;
+}
+
+.panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Meter panel. */
 .meter-block {
   display: grid;
   gap: 8px;
@@ -792,31 +1095,56 @@ h1[tabindex='-1']:focus {
 
 .meter-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
+  min-height: 48px;
 }
 
+/* The verdict word is the only coloured signal in the hero area; the bar carries the heat. */
 .numeral {
-  color: var(--heat, var(--text));
+  color: var(--text);
   font-size: clamp(44px, 12vw, 64px);
   font-weight: 800;
   line-height: 1;
 }
 
-.meter-block[data-empty] .numeral {
+.meter-reset {
+  margin-left: auto;
+}
+
+/* Before the meter has a position (first reading, live warm-up): a note and a faint scale preview. */
+.meter-empty {
+  display: none;
   color: var(--muted);
 }
 
-.numeral-unit {
-  color: var(--muted);
+.meter-block[data-empty] .meter-head {
+  display: none;
+}
+
+.meter-block[data-empty] .meter-empty {
+  display: block;
+}
+
+.meter-block[data-empty] .meter-rest {
+  display: none;
+}
+
+.meter-block[data-empty] .meter-track {
+  opacity: 0.3;
+}
+
+/* Live mode while the tone is not heard: the meter holds an old value. */
+.meter-block[data-stale] {
+  opacity: 0.5;
 }
 
 .meter-track {
   position: relative;
   display: block;
-  height: 28px;
+  height: 36px;
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: 18px;
   background: var(--heat-ramp);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
 }
@@ -832,17 +1160,27 @@ h1[tabindex='-1']:focus {
   transition: left 0.35s ease-out;
 }
 
-.meter-ghost {
+.meter-ghost,
+.meter-best {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--ghost, 0) * 1%);
   width: 4px;
   margin-left: -2px;
   border-radius: 2px;
-  background: var(--text);
   box-shadow: 0 0 0 1px var(--bg);
+}
+
+.meter-ghost {
+  left: calc(var(--ghost, 0) * 1%);
+  background: var(--text);
   opacity: 0.85;
+}
+
+/* Where the best reading so far sat. */
+.meter-best {
+  left: calc(var(--best, 0) * 1%);
+  background: var(--accent);
 }
 
 .meter-cap {
@@ -869,69 +1207,36 @@ h1[tabindex='-1']:focus {
 }
 
 .meter-scale {
+  position: relative;
   display: flex;
   justify-content: space-between;
+  min-height: 1.45em;
   color: var(--muted);
   font-size: 0.8rem;
 }
 
-.info {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-}
-
-.countdown {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
-  font-size: 1.0625rem;
-}
-
-.countdown[data-kind='hold'] .countdown-text {
+/* '★ Best' under the best tick, kept inside the track's ends. */
+.scale-best {
+  position: absolute;
+  top: 0;
+  left: clamp(0%, calc(var(--best, 100) * 1% - 2.5em), calc(100% - 5em));
+  width: 5em;
   color: var(--accent);
   font-weight: 750;
+  text-align: center;
+  white-space: nowrap;
 }
 
-.countdown[data-kind='overdue'] .countdown-text,
-.countdown[data-kind='lost'] .countdown-text {
-  color: var(--warn);
-}
-
-.hearing {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--accent);
-  font-size: 0.9rem;
-  font-weight: 750;
-}
-
-.hearing-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(255, 138, 31, 0.25);
-  animation: blink 1s ease-in-out infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0.35;
-  }
-}
-
+/* History strip: fixed slots filled from the right, so it never reflows. */
 .history {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(var(--slots, 6), minmax(0, 1fr));
   gap: 6px;
   padding: 0;
   list-style: none;
 }
 
 .history li {
-  flex: 1 1 0;
   min-width: 0;
   padding: 6px 2px;
   overflow: hidden;
@@ -958,13 +1263,17 @@ h1[tabindex='-1']:focus {
   color: var(--same);
 }
 
-.history li[data-verdict='best'] {
-  color: var(--accent);
-}
-
 .history li[aria-current] {
   border-color: var(--line);
   background: var(--surface-2);
+  font-weight: 800;
+}
+
+/* A new best is marked by its container too, not just the hue. */
+.history li[data-verdict='best'] {
+  border-color: rgba(255, 138, 31, 0.5);
+  background: rgba(255, 138, 31, 0.16);
+  color: var(--accent);
 }
 
 .guidance {
@@ -993,6 +1302,10 @@ h1[tabindex='-1']:focus {
   background: var(--muted);
 }
 
+.pause-body {
+  max-width: 30em;
+}
+
 .paused .btn-primary {
   max-width: 420px;
 }
@@ -1003,7 +1316,7 @@ h1[tabindex='-1']:focus {
   max-width: 520px;
 }
 
-/* ---- Stop dialog ------------------------------------------------------------------------------- */
+/* ---- Confirmation dialog (Stop, Listen again) -------------------------------------------------- */
 
 .scrim {
   position: fixed;
@@ -1024,7 +1337,7 @@ h1[tabindex='-1']:focus {
   gap: 16px;
   width: 100%;
   max-width: 440px;
-  padding: 20px;
+  padding: 20px 16px;
   border: 1px solid var(--line);
   border-radius: 20px;
   background: var(--surface);
@@ -1040,6 +1353,7 @@ h1[tabindex='-1']:focus {
   font-size: 1.25rem;
   font-weight: 750;
   line-height: 1.3;
+  text-wrap: balance;
 }
 
 .dialog-actions {
@@ -1048,39 +1362,71 @@ h1[tabindex='-1']:focus {
   gap: 10px;
 }
 
+/*
+ * Both actions at the same weight: the destructive one is marked by the danger style, not size.
+ * Slim side padding keeps 'Listen again' on one line in a 360 px wide sheet.
+ */
 .dialog-actions .btn {
   min-height: 64px;
+  padding-inline: 8px;
+  font-size: 1.125rem;
+  font-weight: 750;
+}
+
+@media (min-width: 560px) {
+  .scrim {
+    place-items: center;
+  }
 }
 
 /* ---- Direction scan (radar) ----------------------------------------------------------------- */
 
+/* Compact: the answer first, then the radar sized to the height left under the hunting chrome. */
 .scan {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   justify-items: center;
-  padding: 14px 16px 16px;
-  background: var(--surface);
+  padding: 10px 14px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  background: var(--surface);
 }
 
-.scan__title,
+.scan__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: stretch;
+  min-width: 0;
+}
+
+.scan__status {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.scan[data-quality='clear'] .scan__status {
+  color: var(--accent);
+}
+
+.scan__clear {
+  flex: none;
+  padding-inline: 10px;
+  font-size: 0.9rem;
+}
+
 .scan__how {
   justify-self: start;
-}
-
-.scan__title {
-  font-size: 1.05rem;
-  font-weight: 700;
-}
-
-.scan__how {
   color: var(--muted);
   font-size: 0.95rem;
 }
 
 .scan__radar {
-  width: min(100%, 300px);
+  width: clamp(150px, calc(100dvh - 490px), 300px);
   height: auto;
   aspect-ratio: 240 / 248;
   overflow: visible;
@@ -1102,9 +1448,11 @@ h1[tabindex='-1']:focus {
   stroke-width: 1;
 }
 
+/* Not measured yet: a clear dashed outline, distinct from the quietest measured (filled) sector. */
 .scan__sector--empty {
   fill: none;
-  stroke: var(--line);
+  stroke: var(--muted);
+  stroke-opacity: 0.6;
   stroke-dasharray: 3 4;
 }
 
@@ -1139,38 +1487,11 @@ h1[tabindex='-1']:focus {
   fill: var(--text);
 }
 
-.scan__status {
-  margin: 0;
-  font-size: 1.15rem;
-  font-weight: 700;
-  text-align: center;
-}
-
-.scan[data-quality='clear'] .scan__status {
-  color: var(--accent);
-}
-
 .scan__detail {
   margin: 0;
   color: var(--muted);
   text-align: center;
   font-variant-numeric: tabular-nums;
-}
-
-.scan__actions {
-  display: flex;
-  gap: 12px;
-  width: 100%;
-}
-
-.scan__actions .btn {
-  flex: 1;
-}
-
-@media (min-width: 560px) {
-  .scrim {
-    place-items: center;
-  }
 }
 
 /* ---- Toast ------------------------------------------------------------------------------------- */
@@ -1187,8 +1508,10 @@ h1[tabindex='-1']:focus {
   pointer-events: none;
 }
 
+/* A tap dismisses it (it also leaves on its own, after 2 s plus 55 ms per character, at most 10 s). */
 .toast {
   max-width: 560px;
+  min-height: 48px;
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -1196,6 +1519,10 @@ h1[tabindex='-1']:focus {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   color: var(--text);
   font-size: 0.95rem;
+  text-align: left;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
   animation: toast-in 0.2s ease-out;
 }
 
@@ -1249,17 +1576,114 @@ h1[tabindex='-1']:focus {
     background: var(--accent-hover);
   }
 
+  .locked .btn-progress:hover {
+    background:
+      linear-gradient(90deg, rgba(27, 15, 3, 0.22) calc(var(--p, 0) * 100%), transparent 0),
+      var(--accent-hover);
+  }
+
   .btn-danger:hover {
     border-color: var(--danger);
     background: rgba(255, 138, 128, 0.08);
   }
 
+  .btn-quiet:hover {
+    border-color: transparent;
+    background: var(--surface);
+    color: var(--text);
+  }
+
+  .btn[aria-disabled='true']:hover {
+    border-color: transparent;
+    background: transparent;
+    color: var(--muted);
+  }
+
   .toggle[aria-pressed='true']:hover {
     background: rgba(255, 138, 31, 0.2);
   }
+
+  .tab:not([aria-selected='true']):hover {
+    background: var(--surface);
+    color: var(--text);
+  }
 }
 
-/* ---- Landscape phones: keep verdict, meter and bottom bar on screen ----------------------------- */
+/* ---- Short portrait screens (360 x 640 and similar): keep the main action above the fold -------- */
+
+@media (orientation: portrait) and (max-height: 700px) {
+  .sonar {
+    display: none;
+  }
+
+  /* 360 x 640: the station button's hint still fits without scrolling. */
+  .landing {
+    gap: 10px;
+    padding-block: 0;
+  }
+
+  /* A smaller ring leaves room for the waiting-beep card above the Stop bar. */
+  .ring {
+    width: min(40vw, 150px);
+  }
+
+  .steps {
+    gap: 6px;
+  }
+
+  .steps li {
+    padding: 6px 12px;
+  }
+
+  .lead {
+    font-size: 1rem;
+  }
+
+  .privacy {
+    font-size: 0.9rem;
+  }
+
+  .station-cta {
+    margin-top: 0;
+  }
+
+  .hunting {
+    gap: 10px;
+  }
+}
+
+/*
+ * Narrower than a small phone (320 px: 400 % zoom on a laptop, or a tiny phone): tighten the top
+ * bar and the tab row so both stay on one row without clipping.
+ */
+@media (max-width: 359px) {
+  .topbar {
+    gap: 6px;
+  }
+
+  .chip {
+    padding-inline: 8px;
+  }
+
+  .toggle {
+    min-width: 56px;
+    padding-inline: 6px;
+    font-size: 0.8rem;
+  }
+
+  .tab {
+    gap: 4px;
+    padding: 0 4px;
+    font-size: 0.875rem;
+  }
+
+  .tab-badge {
+    min-width: 18px;
+    padding: 0 4px;
+  }
+}
+
+/* ---- Landscape phones: keep verdict, status, panel and bottom bar on screen --------------------- */
 
 @media (max-height: 500px) and (orientation: landscape) {
   .app {
@@ -1288,60 +1712,48 @@ h1[tabindex='-1']:focus {
     width: 96px;
   }
 
-  .listening-main {
+  .listening-main,
+  .listening-status,
+  .listening-side {
     gap: 8px;
   }
+
 
   .freq-big {
     font-size: 48px;
-  }
-
-  .hunting {
-    display: grid;
-    grid-template-areas:
-      'top top'
-      'hero info'
-      'meter info'
-      'bar bar';
-    grid-template-rows: auto auto 1fr auto;
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-    gap: 8px 20px;
-  }
-
-  .topbar {
-    grid-area: top;
-  }
-
-  .hero {
-    grid-area: hero;
-    padding-top: 0;
-  }
-
-  .meter-block {
-    grid-area: meter;
-    align-self: start;
-  }
-
-  .info {
-    grid-area: info;
-    gap: 8px;
-  }
-
-  .hunting .bottombar {
-    grid-area: bar;
-    padding-top: 6px;
   }
 
   .verdict {
     font-size: clamp(32px, 11vh, 52px);
   }
 
+  .hero[data-verdict='first'] .verdict,
+  .hero[data-verdict='none'] .verdict,
+  .hero[data-verdict='scanning'] .verdict {
+    font-size: clamp(26px, 8vh, 38px);
+  }
+
+  .countdown {
+    min-height: 48px;
+    font-size: 1rem;
+  }
+
+  .countdown[data-kind='hold'] .countdown-text,
+  .countdown[data-kind='late'] .countdown-text {
+    font-size: 1.25rem;
+  }
+
   .numeral {
     font-size: 36px;
   }
 
+  .meter-head {
+    min-height: 40px;
+  }
+
   .meter-track {
     height: 22px;
+    border-radius: 11px;
   }
 
   .guidance {
@@ -1351,6 +1763,252 @@ h1[tabindex='-1']:focus {
 
   .toast-region {
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + 68px);
+  }
+}
+
+/*
+ * Landscape phones (not at 320 px, e.g. 400 % zoom, where everything stays one column): side by
+ * side wherever that keeps the main actions on screen. Landing: title and tagline on one line, the
+ * three steps in a row. Locked: both actions in a row. Error card: its actions in a row.
+ */
+@media (max-height: 500px) and (orientation: landscape) and (min-width: 480px) {
+  .brand {
+    grid-auto-flow: column;
+    justify-content: start;
+    align-items: baseline;
+    column-gap: 14px;
+  }
+
+  .steps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .steps li {
+    padding: 8px 10px;
+  }
+
+  /* Locked: Start hunting and 'Wrong sound?' side by side, both on screen. */
+  .locked .actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 640px;
+    margin-top: 4px;
+  }
+
+  .locked .auto-caption {
+    grid-area: 2 / 1;
+  }
+
+  .locked .actions > .btn-secondary {
+    grid-area: 1 / 2;
+  }
+
+  /* Error card: its actions side by side (Try again stays the filled, first one). */
+  .card-actions {
+    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
+  }
+
+  .card {
+    padding: 16px 20px;
+  }
+}
+
+/*
+ * Two columns only when there is room for them (not at 320 px, e.g. 400 % zoom): hero, status and
+ * tabs on the left, the selected panel on the right, bottom bar across.
+ */
+@media (max-height: 500px) and (orientation: landscape) and (min-width: 600px) {
+  /* Landing: Start listening and the station button side by side, both on screen. */
+  .cta {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    column-gap: 12px;
+    align-items: start;
+  }
+
+  .cta > .btn-primary {
+    grid-area: 1 / 1;
+  }
+
+  .cta > .caption {
+    grid-area: 2 / 1;
+  }
+
+  .cta > .card {
+    grid-column: 1 / -1;
+  }
+
+  .station-cta {
+    grid-area: 1 / 2 / 3;
+    margin-top: 0;
+  }
+
+  .station-btn {
+    min-height: 64px;
+  }
+
+  /* Listening: status on the left, tip and the waiting-beep card (with Use it now) on the right. */
+  .listening-main {
+    flex-direction: row;
+    align-items: center;
+    gap: 32px;
+  }
+
+  .listening-status,
+  .listening-side {
+    flex: 1 1 0;
+  }
+
+  .hunting {
+    display: grid;
+    grid-template-areas:
+      'top top'
+      'hero panel'
+      'status panel'
+      'tabs panel'
+      '. panel'
+      'bar bar';
+    grid-template-rows: auto auto auto auto 1fr auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+    gap: 8px 20px;
+  }
+
+  .hunting .topbar {
+    grid-area: top;
+  }
+
+  .hunting .hero {
+    grid-area: hero;
+    padding-top: 0;
+  }
+
+  .hunting .countdown {
+    grid-area: status;
+  }
+
+  .hunting .tabs {
+    grid-area: tabs;
+  }
+
+  .hunting .panels {
+    grid-area: panel;
+  }
+
+  .hunting .bottombar {
+    grid-area: bar;
+    padding-top: 6px;
+  }
+
+  /* Direction: the radar beside its status and detail, as tall as the panel allows. */
+  .hunting .scan {
+    grid-template-areas:
+      'radar head'
+      'radar how'
+      'radar detail';
+    grid-template-rows: auto auto 1fr;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    justify-items: start;
+    gap: 6px 14px;
+    padding: 8px 12px;
+  }
+
+  /* The answer gets the full column width; Clear scan sits under it. */
+  .hunting .scan__head {
+    grid-area: head;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+  }
+
+  .hunting .scan__status {
+    flex-basis: 100%;
+  }
+
+  .hunting .scan__clear {
+    margin-left: -10px;
+  }
+
+  .hunting .scan__how {
+    grid-area: how;
+  }
+
+  .hunting .scan__detail {
+    grid-area: detail;
+    text-align: left;
+  }
+
+  .hunting .scan__radar {
+    grid-area: radar;
+    width: auto;
+    height: min(236px, calc(100dvh - 172px));
+  }
+}
+
+/*
+ * Landscape phones 600 to 819 px wide (640 x 360, 740 x 360, Chrome's 800 x 300-odd): a compact tab
+ * row and a slightly wider left column keep all four tabs readable, and the radar also shrinks
+ * with the width, so its answer keeps room beside it.
+ */
+@media (max-height: 500px) and (orientation: landscape) and (min-width: 600px) and (max-width: 819px) {
+  .hunting {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    column-gap: 16px;
+  }
+
+  .tab {
+    gap: 4px;
+    padding: 0 4px;
+    font-size: 0.875rem;
+  }
+
+  .tab-badge {
+    min-width: 18px;
+    padding: 0 4px;
+  }
+
+  .hunting .scan__radar {
+    height: min(236px, calc(100dvh - 172px), calc(50vw - 170px));
+  }
+
+  .hunting .scan__status {
+    font-size: 1rem;
+  }
+
+  .hunting .scan__detail {
+    font-size: 0.875rem;
+    line-height: 1.35;
+  }
+}
+
+/*
+ * Landscape at most 380 px tall (640 x 360, or Chrome's address bar showing): the steps already say
+ * what the lead says, so it gives its room to Start listening.
+ */
+@media (max-height: 380px) and (orientation: landscape) {
+  .lead {
+    display: none;
+  }
+}
+
+/*
+ * Short landscape (a phone in Chrome with its address bar shown: about 300 to 340 px tall): tighter
+ * gaps and a slimmer bottom bar, so the tab row stays clear of the bar.
+ */
+@media (max-height: 340px) and (orientation: landscape) and (min-width: 600px) {
+  .hunting {
+    row-gap: 6px;
+  }
+
+  .hunting .bottombar {
+    padding-top: 4px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+  }
+
+  .panel {
+    gap: 8px;
+  }
+
+  .toast-region {
+    bottom: calc(max(6px, env(safe-area-inset-bottom)) + 60px);
   }
 }
 
@@ -1383,5 +2041,1107 @@ h1[tabindex='-1']:focus {
 
   .dots span {
     opacity: 0.75;
+  }
+}
+
+/* ---- Log panel (hunting-screen tab; src/ui/logPanel.ts) --------------------------------------- */
+
+.log {
+  container: log / inline-size;
+  display: grid;
+  gap: 10px;
+  width: 100%; /* an inline-size container never sizes to its content: fill the panel region */
+  min-width: 0;
+}
+
+.log__head {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 48px;
+}
+
+.log__title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.log__count {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log__copy {
+  flex: none;
+  padding-inline: 14px;
+}
+
+.log__copy:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.log__empty {
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+/* The list scrolls inside the panel, so a long hunt never makes the page endless. */
+.log__list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  max-height: min(640px, max(240px, calc(100vh - 420px)));
+  max-height: min(640px, max(240px, calc(100dvh - 420px)));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+
+.log-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+/* A wide panel (laptop) puts the note next to the reading: one compact line per reading. */
+@container log (min-width: 520px) {
+  .log-row {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 50%);
+    align-items: center;
+    gap: 12px;
+    padding: 6px 6px 6px 12px;
+  }
+}
+
+/* Newest reading on top: where you are standing now. */
+.log-row:first-child {
+  border-color: color-mix(in srgb, var(--line) 70%, var(--muted));
+  background: var(--surface-2);
+}
+
+.log-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+
+.log-row__time {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same colours as the hero verdict, always next to the verdict word itself. */
+.log-row__verdict {
+  color: var(--text);
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.log-row__verdict[data-verdict='warmer'] {
+  color: var(--warmer);
+}
+
+.log-row__verdict[data-verdict='colder'] {
+  color: var(--colder);
+}
+
+.log-row__verdict[data-verdict='same'] {
+  color: var(--same);
+}
+
+.log-row__verdict[data-verdict='max'] {
+  color: var(--hot);
+}
+
+.log-row__clip {
+  align-self: center;
+  padding: 1px 8px;
+  border: 1px solid var(--hot);
+  border-radius: 999px;
+  color: var(--hot);
+  font-size: 0.8rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.log-row__details {
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* A line breaks between parts ('+4 dB', 'Loudest: Kitchen'), inside one only when it is longer than the line. */
+.log-row__part {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.log-row__note {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem; /* at least 16 px, so mobile browsers do not zoom into the field */
+  line-height: 1.3;
+}
+
+.log-row__note::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.log-row__note:focus,
+.log-row__note:focus-visible {
+  border-color: var(--focus);
+  outline: 3px solid var(--focus);
+  outline-offset: 0;
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  .log {
+    gap: 8px;
+  }
+
+  .log__list {
+    max-height: max(150px, calc(100vh - 230px));
+    max-height: max(150px, calc(100dvh - 230px));
+  }
+
+  .log-row {
+    padding: 6px 10px 8px;
+  }
+}
+
+/* ---- Stations (Stations tab and pairing: src/ui/stationsPanel.ts; station screen: src/ui/stationScreen.ts) */
+
+.st-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.stations {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Summary: who heard the last chirp loudest. */
+.stations-summary {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.stations-summary__title {
+  font-size: clamp(22px, 6.5vw, 30px);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.stations-summary__detail {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stations-summary[data-kind='loudest'] {
+  border-color: rgba(255, 138, 31, 0.45);
+}
+
+.stations-summary[data-kind='loudest'] .stations-summary__title {
+  color: var(--accent);
+}
+
+.stations-summary[data-kind='waiting'] .stations-summary__title,
+.stations-summary[data-kind='close'] .stations-summary__title,
+.stations-summary[data-kind='single'] .stations-summary__title {
+  color: var(--same);
+}
+
+.stations-summary[data-kind='empty'] {
+  border-style: dashed;
+}
+
+.stations-summary[data-kind='empty'] .stations-summary__detail {
+  color: var(--text);
+}
+
+/* Listener rows: icon, name + kind + status, level + difference, remove. */
+.stations-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stations-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 8px 6px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.stations-row[data-kind='self'] {
+  padding-right: 14px;
+}
+
+.stations-row[data-loudest] {
+  border-color: rgba(255, 138, 31, 0.6);
+  background: rgba(255, 138, 31, 0.08);
+}
+
+.stations-row__icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--heat-2);
+}
+
+.stations-row[data-loudest] .stations-row__icon {
+  background: rgba(255, 138, 31, 0.18);
+  color: var(--accent);
+}
+
+.stations-row__main {
+  display: grid;
+  min-width: 0;
+}
+
+.stations-row__name {
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stations-row[data-status='lost'] .stations-row__name {
+  color: var(--muted);
+}
+
+/* Kind and status wrap as whole items: the status shape never ends a line without its words. */
+.stations-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.3;
+}
+
+.stations-row__status {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* Status: a shape plus words, never colour alone. Listening: dot; connecting: ring; lost: triangle. */
+.stations-row__status::before {
+  content: '';
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.stations-row[data-status='listening'] .stations-row__status {
+  color: var(--info);
+}
+
+.stations-row[data-status='connecting'] .stations-row__status {
+  color: var(--warn);
+}
+
+.stations-row[data-status='connecting'] .stations-row__status::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px currentColor;
+  animation: stations-pulse 1.2s ease-in-out infinite;
+}
+
+.stations-row[data-status='lost'] .stations-row__status {
+  color: var(--danger);
+}
+
+.stations-row[data-status='lost'] .stations-row__status::before {
+  width: 10px;
+  height: 9px;
+  border-radius: 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.stations-row__level {
+  display: grid;
+  justify-items: end;
+  line-height: 1.25;
+  text-align: right;
+}
+
+.stations-row__db {
+  font-size: 1.05rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.stations-row__delta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.stations-row[data-loudest] .stations-row__delta {
+  color: var(--accent);
+  font-weight: 750;
+}
+
+/* Remove: an x; the first tap turns it into 'Remove?', a second tap within 4 s removes. */
+.stations-row__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.stations-row__remove-text {
+  display: none;
+}
+
+.stations-row__remove[data-armed] {
+  border-color: var(--danger-line);
+  background: rgba(255, 138, 128, 0.1);
+  color: var(--danger);
+}
+
+.stations-row__remove[data-armed] .st-icon {
+  display: none;
+}
+
+.stations-row__remove[data-armed] .stations-row__remove-text {
+  display: inline;
+}
+
+/* Add a phone, extra microphones, calibration. */
+.stations-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.stations-add {
+  width: 100%;
+  border-color: rgba(255, 138, 31, 0.55);
+  color: var(--accent);
+}
+
+.stations-mics,
+.stations-mics__buttons {
+  display: grid;
+  gap: 8px;
+}
+
+.stations-group-title {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stations-mics__buttons .btn {
+  justify-content: flex-start;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.stations-calib {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.stations-calib__text {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.stations-calib[data-calibrating] {
+  border-style: solid;
+  border-color: var(--info-line);
+  background: var(--info-bg);
+}
+
+.stations-calib[data-calibrating] .stations-calib__text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #C2E4EE;
+}
+
+.stations-calib[data-calibrating] .stations-calib__text::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+  animation: stations-pulse 1.2s ease-in-out infinite;
+}
+
+/* Just calibrated: a check mark and the next step (put each device in its room). */
+.stations-calib[data-calibrated] {
+  border-style: solid;
+  border-color: var(--info-line);
+}
+
+.stations-calib[data-calibrated] .stations-calib__text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text);
+}
+
+.stations-calib[data-calibrated] .stations-calib__text::before {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 7px;
+  border-bottom: 2.5px solid var(--info);
+  border-left: 2.5px solid var(--info);
+  transform: translateY(-3px) rotate(-45deg);
+}
+
+.stations-privacy {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.stations-privacy .st-icon {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+/* A link-styled button for the other way through a step. */
+.stations-link {
+  justify-self: center;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.stations-wait {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.stations-wait span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: stations-wait 1.2s ease-in-out infinite;
+}
+
+.stations-wait span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.stations-wait span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes stations-wait {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes stations-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Pairing card (hub side). */
+.pair {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.pair__eyebrow,
+.station__eyebrow {
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pair__title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 750;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+/* Headings receive focus programmatically when a step appears; no ring there. */
+.pair__title:focus {
+  outline: none;
+}
+
+.pair__then {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.pair__message,
+.station__error {
+  padding: 10px 12px;
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 128, 0.08);
+  color: var(--danger);
+}
+
+.pair__next {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+/* A code to show: QR on a white card (the quiet zone stays light in the dark UI), text, Copy / Share. */
+.pair-code {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  width: 100%;
+}
+
+.pair-qr {
+  padding: 8px;
+  border-radius: 16px;
+  background: #FFFFFF;
+  line-height: 0;
+}
+
+.pair-qr svg {
+  display: block;
+  width: min(220px, 62vw);
+  height: auto;
+  aspect-ratio: 1;
+}
+
+.pair-qr-failed {
+  color: var(--warn);
+}
+
+.pair-code__side {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.pair-code__text {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  resize: none;
+  field-sizing: content; /* as tall as the code, never a scrollbar (rows is the fallback) */
+}
+
+/* Side by side where they fit on one line each, else stacked (the narrow landscape panel). */
+.pair-code__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.pair-code__actions .btn {
+  flex: 1 1 7.5em;
+  min-width: 0;
+}
+
+/* Pasting a code. */
+.pair-field,
+.station__field {
+  display: grid;
+  gap: 6px;
+}
+
+.pair-field__label,
+.station__label {
+  font-weight: 650;
+}
+
+.pair-paste,
+.station__input {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem; /* at least 16 px, so mobile browsers do not zoom into the field */
+  line-height: 1.35;
+}
+
+.pair-paste {
+  font-family: var(--mono);
+  word-break: break-all;
+  resize: vertical;
+}
+
+.pair-paste::placeholder,
+.station__input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.pair-paste:focus,
+.station__input:focus,
+.pair-code__text:focus {
+  border-color: var(--focus);
+  outline: 3px solid var(--focus);
+  outline-offset: 0;
+}
+
+/* Camera view: rounded, dimmed outside a viewfinder with corner marks. */
+.pair-scanner {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  width: 100%;
+}
+
+/*
+ * Scrolled into view when a pairing step appears (stationsPanel.ts): clear of the sticky bottom bar
+ * of the hunting screen, so the other phone can scan the whole code.
+ */
+.pair-qr,
+.pair-scanner__view {
+  scroll-margin-top: 12px;
+  scroll-margin-bottom: calc(96px + env(safe-area-inset-bottom));
+}
+
+/* Focusable (tabindex -1) only to keep focus after Try the camera again; no ring for that. */
+.pair-scanner__view:focus {
+  outline: none;
+}
+
+.pair-scanner__view {
+  position: relative;
+  width: min(100%, 280px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: #000000;
+  isolation: isolate;
+}
+
+.pair-scanner__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pair-scanner__frame {
+  --corner: 28px;
+  --stroke: 4px;
+  position: absolute;
+  inset: 15%;
+  background:
+    linear-gradient(#FFFFFF 0 0) left top / var(--corner) var(--stroke),
+    linear-gradient(#FFFFFF 0 0) left top / var(--stroke) var(--corner),
+    linear-gradient(#FFFFFF 0 0) right top / var(--corner) var(--stroke),
+    linear-gradient(#FFFFFF 0 0) right top / var(--stroke) var(--corner),
+    linear-gradient(#FFFFFF 0 0) left bottom / var(--corner) var(--stroke),
+    linear-gradient(#FFFFFF 0 0) left bottom / var(--stroke) var(--corner),
+    linear-gradient(#FFFFFF 0 0) right bottom / var(--corner) var(--stroke),
+    linear-gradient(#FFFFFF 0 0) right bottom / var(--stroke) var(--corner);
+  background-repeat: no-repeat;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35);
+}
+
+.pair-scanner__frame::after {
+  content: '';
+  position: absolute;
+  top: 8%;
+  right: 8%;
+  left: 8%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  opacity: 0.8;
+  animation: pair-scan 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes pair-scan {
+  to {
+    top: 92%;
+  }
+}
+
+.pair-scanner__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #FFFFFF;
+  font-weight: 650;
+  text-align: center;
+}
+
+.pair-scanner__message {
+  max-width: 32em;
+  color: var(--warn);
+  text-align: center;
+}
+
+/* Station screen. */
+.station {
+  gap: 18px;
+}
+
+.station__head {
+  display: grid;
+  gap: 6px;
+}
+
+.station__body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.station__intro {
+  font-size: 1.0625rem;
+}
+
+.station__input {
+  min-height: 56px;
+  font-size: 1.125rem;
+}
+
+.station__caption,
+.station__hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.station__waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.station__waiting::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: stations-pulse 1.2s ease-in-out infinite;
+}
+
+/* Actions sit at the bottom of the screen, in the thumb zone. */
+.station__actions {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+  padding-bottom: 4px;
+}
+
+.station[data-step='connected'] .station__title,
+.station[data-step='lost'] .station__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.station[data-step='connected'] .station__title {
+  color: var(--info);
+}
+
+.station[data-step='connected'] .station__title::before,
+.station[data-step='lost'] .station__title::before {
+  content: '';
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+
+/* Connected: a filled dot with a halo; lost: a hollow ring (shape, not only colour). */
+.station[data-step='connected'] .station__title::before {
+  background: currentColor;
+  box-shadow: 0 0 0 6px rgba(127, 196, 216, 0.18);
+}
+
+.station[data-step='lost'] .station__title {
+  color: var(--warn);
+}
+
+.station[data-step='lost'] .station__title::before {
+  box-shadow: inset 0 0 0 3px currentColor;
+}
+
+.station__name {
+  font-size: 1.125rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.station__freq {
+  color: var(--accent);
+  font-size: clamp(22px, 6vw, 28px);
+  font-weight: 800;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.station__freq[data-waiting] {
+  color: var(--muted);
+  font-size: 1.05rem;
+  font-weight: 650;
+}
+
+.station__level {
+  display: grid;
+  gap: 6px;
+}
+
+.station__level-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.station__meter {
+  position: relative;
+  height: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+
+.station__meter-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--heat-2);
+  transform: scaleX(var(--level, 0));
+  transform-origin: left center;
+  transition: transform 0.1s linear;
+}
+
+.station__stats {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+}
+
+.station__stat {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.station__stat dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.station__stat-value {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.station__note {
+  padding: 12px 14px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius-sm);
+  background: var(--info-bg);
+  color: #C2E4EE;
+}
+
+/* Wide panels (laptop): QR next to the code text and its buttons. */
+@media (min-width: 600px) {
+  .pair-code {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: stretch;
+  }
+}
+
+@media (hover: hover) {
+  .stations-row__remove:hover {
+    border-color: var(--line);
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .stations-row__remove[data-armed]:hover {
+    border-color: var(--danger);
+    background: rgba(255, 138, 128, 0.16);
+    color: var(--danger);
+  }
+
+  .stations-link:hover {
+    color: var(--accent-hover);
+  }
+}
+
+/* Landscape phones: QR beside its text, smaller camera view, tighter spacing. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .pair-code {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-items: stretch;
+  }
+
+  .pair-qr svg {
+    width: min(220px, 56vh);
+  }
+
+  .pair-scanner__view {
+    width: min(100%, 62vh);
+  }
+
+  .station {
+    gap: 12px;
+  }
+
+  .station__body {
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pair-scanner__frame::after {
+    display: none;
+  }
+
+  .stations-wait span {
+    opacity: 0.75;
+    transform: none;
+  }
+
+  .station__meter-fill {
+    transition: none;
   }
 }

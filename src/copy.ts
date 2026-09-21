@@ -10,16 +10,20 @@ import type {
   Chirp,
   Countdown,
   ErrorCode,
+  HuntPanel,
   HuntView,
   Lock,
   LockMode,
+  LogEntry,
   MicDiag,
+  PendingBeep,
   RadarView,
   Reading,
   ScanState,
   Verdict,
 } from './types.ts'
 import { direction8, relativeBearing, type Direction8 } from './dsp/radar.ts'
+import type { Comparison, ComparisonEntry, ListenerKind, ListenerStatus, ListenerView, StationStep } from './types.ts'
 
 /** Real minus sign (U+2212) used by every signed number on the main screens. */
 export const MINUS = '\u2212'
@@ -35,25 +39,29 @@ export const COPY = {
     lead: 'Find that mystery chirp. Walk around and Soundwave tells you if you are getting warmer or colder.',
     steps: [
       { title: 'Listen', text: 'it locks onto the beep.' },
-      { title: 'Walk', text: 'stand still for each chirp.' },
+      { title: 'Move', text: 'walk between chirps, freeze during them.' },
       { title: 'Follow', text: 'warmer means closer.' },
     ],
     privacy: 'Nothing leaves your device. Audio is analysed live in your browser and never recorded or uploaded.',
     start: 'Start listening',
-    caption: 'Uses your microphone. Your browser will ask for permission. Keep the screen on while you hunt.',
+    caption: 'Your browser will ask to use the microphone.',
+    station: 'Use this device as a station',
+    stationHint: 'Leave it in another room to help the main phone compare.',
   },
   requesting: {
     title: 'Allow microphone access',
     body: 'Choose Allow when your browser asks.',
+    /** Desktop wording; see PERMISSION_HELP for touch and installed-app variants. */
     hint: "Don't see a prompt? Look for the microphone icon next to the address bar.",
     cancel: 'Cancel',
   },
   listening: {
     title: 'Listening for the beep…',
     tip: 'Stay quiet and still. Chirps every 30–60 s are normal.',
-    noBeep: 'No beep yet. Is it still chirping? Stay quiet and wait for the next one.',
+    noBeep: 'No beep yet. Move to where you last heard it, turn off fans or the TV, and wait for the next chirp.',
     micLabel: 'Mic',
     elapsedLabel: 'Elapsed',
+    useNow: 'Use it now',
     stop: 'Stop',
   },
   rawAudio: {
@@ -64,7 +72,8 @@ export const COPY = {
     banner: 'Locked on',
     continuous: 'Continuous tone',
     startHunting: 'Start hunting',
-    notIt: 'Not it, listen again',
+    auto: 'Starting automatically…',
+    notIt: 'Wrong sound? Listen again',
   },
   hunting: {
     title: 'Hunting for the beep',
@@ -73,41 +82,64 @@ export const COPY = {
     frequencyLabel: 'Locked frequency',
     modeLabel: 'Mode',
     clicks: 'Clicks',
-    haptics: 'Haptics',
-    direction: 'Direction',
+    haptics: 'Vibrate',
     on: 'On',
     off: 'Off',
     waiting: 'LISTENING',
+    scanning: 'SCANNING',
     newBest: 'New best!',
     startingPoint: 'Your starting point',
     meterLabel: 'Warmth',
     max: 'MAX',
-    ofHundred: 'of 100',
+    meterEmpty: 'The meter starts with the next chirp.',
+    meterWarmup: 'Warming up…',
     scaleCold: 'Cold',
     scaleHot: 'Hot',
+    scaleBest: 'Best',
     hearing: 'Hearing it',
+    notHearing: "Can't hear the tone right now",
     history: 'Recent readings',
-    resetBest: 'Reset best',
-    relisten: 'Re-listen',
+    resetBest: 'Start over here',
+    relisten: 'Listen again',
     stop: 'Stop',
+    tabsLabel: 'Hunting views',
+    tabs: {
+      meter: 'Meter',
+      direction: 'Direction',
+      log: 'Log',
+      stations: 'Stations',
+    } satisfies Record<HuntPanel, string>,
   },
   paused: {
-    title: 'Paused. Soundwave was in the background.',
-    resume: 'Tap to resume listening',
+    title: 'Paused',
+    body: 'Soundwave stops listening when you leave the app or the screen locks.',
+    kept: 'Your readings are kept.',
+    resume: 'Resume',
     resuming: 'Resuming…',
     stop: 'Stop',
   },
   stopConfirm: {
-    title: 'Stop hunting? Your best-so-far will be lost.',
+    title: 'Stop hunting? Your readings will be cleared.',
     stop: 'Stop',
     keepGoing: 'Keep going',
   },
+  relistenConfirm: {
+    title: 'Listen again? Your readings will be cleared.',
+    confirm: 'Listen again',
+    keepGoing: 'Keep going',
+  },
   toasts: {
-    wakeLock: 'Your screen may turn off while hunting. Tap it now and then, or raise your display timeout.',
+    wakeLock: 'Your screen may go dark while hunting. Tap it now and then to keep it on.',
     live: 'Continuous tone. Switched to the live meter.',
     chirp: 'Back to chirp mode.',
     linkCopied: 'Link copied.',
     linkCopyFailed: "Couldn't copy the link. Copy it from the address bar.",
+    resetBest: 'Cleared. The next chirp is your new starting point.',
+    stillBlocked: 'Still blocked. Change the setting first, then tap Try again.',
+    codeCopied: 'Code copied. Paste it on the other device.',
+    codeCopyFailed: "Couldn't copy the code. Select it and copy it by hand.",
+    micAddFailed: "Couldn't open that microphone. It may be in use or unplugged.",
+    stationMicFailed: "Couldn't open the microphone, so this device can't be a station.",
   },
   errorActions: {
     retry: 'Try again',
@@ -127,6 +159,17 @@ export const TEXT = {
   modeChirp: COPY.toasts.chirp,
   linkCopied: COPY.toasts.linkCopied,
   linkCopyFailed: COPY.toasts.linkCopyFailed,
+  /** After 'Start over here' (onResetBest). */
+  resetBest: COPY.toasts.resetBest,
+  /** When Try again ends in 'permission' again within about 1.5 s. */
+  stillBlocked: COPY.toasts.stillBlocked,
+  /** Copy code / Share fallback in pairing. */
+  codeCopied: COPY.toasts.codeCopied,
+  codeCopyFailed: COPY.toasts.codeCopyFailed,
+  /** Adding an extra microphone failed. */
+  micAddFailed: COPY.toasts.micAddFailed,
+  /** Station mode could not open the microphone. */
+  stationMicFailed: COPY.toasts.stationMicFailed,
 } as const
 
 /** Recovery action offered on an error card. */
@@ -136,8 +179,9 @@ export type ErrorAction = 'retry' | 'reload' | 'back' | 'copyLink'
 export const ERROR_COPY: Record<ErrorCode, { heading: string; body: string; actions: readonly ErrorAction[] }> = {
   permission: {
     heading: 'Microphone blocked',
+    /** Desktop wording; see PERMISSION_HELP for touch and installed-app variants. */
     body:
-      "Soundwave can't hear anything without the microphone. Nothing is recorded: it only measures loudness at one frequency. " +
+      'Soundwave needs the microphone to hear the beep. ' +
       'Click the icon next to the address bar, allow the microphone for this site, then try again.',
     actions: ['retry', 'reload'],
   },
@@ -158,6 +202,37 @@ export const ERROR_COPY: Record<ErrorCode, { heading: string; body: string; acti
       'If you opened this link inside another app, use its menu to open it in your browser.',
     actions: ['copyLink', 'back'],
   },
+}
+
+/**
+ * Where Soundwave runs, for instructions that depend on it: an installed app (no address bar),
+ * a touch browser, or a desktop browser. ui.ts picks it with matchMedia.
+ */
+export type Platform = 'standalone' | 'touch' | 'desktop'
+
+/** How to allow a blocked microphone (error card body) and where the prompt is (requesting hint). */
+export const PERMISSION_HELP: Record<Platform, { readonly body: string; readonly hint: string }> = {
+  standalone: {
+    body:
+      'Soundwave needs the microphone to hear the beep. Open Chrome, tap ⋮ › Settings › Site settings › Microphone ' +
+      'and allow this site. Then come back and tap Try again.',
+    hint: "Don't see a prompt? Open Chrome, tap ⋮ › Settings › Site settings › Microphone and allow this site.",
+  },
+  touch: {
+    body:
+      'Soundwave needs the microphone to hear the beep. Tap the icon at the left of the address bar, open ' +
+      'Permissions and turn on Microphone. Then tap Try again. Nothing is recorded.',
+    hint: "Don't see a prompt? Tap the icon at the left of the address bar and allow the microphone.",
+  },
+  desktop: {
+    body: ERROR_COPY.permission.body,
+    hint: COPY.requesting.hint,
+  },
+}
+
+/** Error card body for this platform (only the permission error depends on it). */
+export function errorBody(code: ErrorCode, platform: Platform): string {
+  return code === 'permission' ? PERMISSION_HELP[platform].body : ERROR_COPY[code].body
 }
 
 // ---- Number formatters ---------------------------------------------------------------------------
@@ -204,12 +279,25 @@ export function formatPct(pct: number | null): string {
 
 // ---- Verdicts and readings -----------------------------------------------------------------------
 
+/**
+ * Hero words. 'SAME' rather than 'ABOUT THE SAME' or 'NO CHANGE': every label must fit one line at
+ * the hero size on a 360 px phone; the sub-line qualifies it.
+ */
 const VERDICT_LABELS: Record<Verdict, string> = {
   first: 'FIRST READING',
   warmer: 'WARMER',
   colder: 'COLDER',
-  same: 'ABOUT THE SAME',
+  same: 'SAME',
   max: 'VERY HOT',
+}
+
+/** The same verdicts as spoken by a screen reader (sentence case reads better than capitals). */
+const VERDICT_SPOKEN: Record<Verdict, string> = {
+  first: 'First reading',
+  warmer: 'Warmer',
+  colder: 'Colder',
+  same: 'About the same',
+  max: 'Very hot',
 }
 
 /** Big verdict word shown in the hunting hero. */
@@ -224,16 +312,36 @@ export function heroLabel(view: HuntView | null): string {
   return view.last ? verdictLabel(view.last.verdict) : COPY.hunting.waiting
 }
 
-/** Sub-line under a chirp verdict: '+4 dB vs last', or the starting-point note for the first reading. */
-export function deltaLine(reading: Reading): string {
-  if (reading.deltaPrevDb === null) return COPY.hunting.startingPoint
-  return `${formatDelta(reading.deltaPrevDb)} vs last`
+/**
+ * What a screen reader says for a new chirp reading: the verdict, the meter position and a new
+ * best, e.g. 'Warmer. 92 of 100. New best.'; the first reading is the starting point.
+ */
+export function readingAnnouncement(reading: Reading): string {
+  if (reading.verdict === 'first') return `${VERDICT_SPOKEN.first}. ${COPY.hunting.startingPoint}.`
+  const parts: string[] = [VERDICT_SPOKEN[reading.verdict]]
+  if (reading.pct !== null && Number.isFinite(reading.pct)) parts.push(`${formatPct(reading.pct)} of 100`)
+  if (reading.isNewBest) parts.push('New best')
+  return `${parts.join('. ')}.`
 }
 
-/** Sub-line under the live verdict: '+4 dB vs 3 s ago' (refMs = config.liveRefMs); empty without a reference. */
+/** What a screen reader says for a settled live-mode verdict, e.g. 'Colder.'. */
+export function liveAnnouncement(verdict: Verdict): string {
+  return `${VERDICT_SPOKEN[verdict]}.`
+}
+
+/** Sub-line under a chirp verdict: '+4 dB vs last', 'Same as last spot', or the starting-point note. */
+export function deltaLine(reading: Reading): string {
+  if (reading.deltaPrevDb === null) return COPY.hunting.startingPoint
+  const text = formatDelta(reading.deltaPrevDb)
+  return text === '0 dB' ? 'Same as last spot' : `${text} vs last`
+}
+
+/** Sub-line under the live verdict: '+4 dB vs 3 s ago' or 'Same as 3 s ago' (refMs = config.liveRefMs); empty without a reference. */
 export function liveDeltaLine(deltaDb: number | null, refMs: number): string {
   if (deltaDb === null) return ''
-  return `${formatDelta(deltaDb)} vs ${Math.round(refMs / 1000)} s ago`
+  const ago = `${Math.round(refMs / 1000)} s ago`
+  const text = formatDelta(deltaDb)
+  return text === '0 dB' ? `Same as ${ago}` : `${text} vs ${ago}`
 }
 
 /** History marker: ★ new best, ▲ warmer or clipped (very hot), ▼ colder, = about the same, • first reading. */
@@ -252,16 +360,18 @@ export function historyMarker(reading: Reading): string {
   }
 }
 
-/** Visible history item 'pct marker', e.g. '72 ▲'; the first reading has no percent and reads '– •'. */
+/** Visible history item 'pct marker', e.g. '72 ▲'; the first reading (no percent yet) reads 'Start'. */
 export function historyItemText(reading: Reading): string {
+  if (reading.verdict === 'first') return 'Start'
   return `${formatPct(reading.pct)} ${historyMarker(reading)}`
 }
 
 /** Screen-reader label for one history item, e.g. '72 of 100, warmer, new best'. */
 export function historyItemLabel(reading: Reading): string {
+  if (reading.verdict === 'first') return 'first reading, your starting point'
   const parts = [
     reading.pct === null ? 'no percent' : `${formatPct(reading.pct)} of 100`,
-    verdictLabel(reading.verdict).toLowerCase(),
+    VERDICT_SPOKEN[reading.verdict].toLowerCase(),
   ]
   if (reading.isNewBest) parts.push('new best')
   return parts.join(', ')
@@ -289,34 +399,70 @@ export function rawAudioText(mic: MicDiag | null): string | null {
   return mic.rawAudio === 'partial' ? COPY.rawAudio.partial : COPY.rawAudio.unknown
 }
 
+// ---- Listening: a beep waiting for confirmation --------------------------------------------------
+
+/** Main line of the listening screen's pending card: 'Heard a beep at 3,120 Hz. Waiting for it again to confirm…'. */
+export function pendingText(pending: PendingBeep): string {
+  return `Heard a beep at ${formatHz(pending.f0Hz)}. Waiting for it again to confirm…`
+}
+
+/** How often and how long ago: 'Heard once, just now', 'Heard 2 times, 40 s ago', 'Heard once, 3 min ago'. */
+export function pendingSightingsText(sightings: number, agoS: number): string {
+  const n = Number.isFinite(sightings) ? Math.max(1, Math.round(sightings)) : 1
+  const count = n === 1 ? 'once' : `${n} times`
+  const s = Number.isFinite(agoS) && agoS > 0 ? Math.floor(agoS) : 0
+  const ago = s < 5 ? 'just now' : s < 60 ? `${s} s ago` : `${Math.floor(s / 60)} min ago`
+  return `Heard ${count}, ${ago}`
+}
+
+// ---- Hunting tabs --------------------------------------------------------------------------------
+
+/**
+ * Screen-reader text of a tab's count badge: '4 readings' (Log), '2 listening' (Stations).
+ * The visible badge shows only the number.
+ */
+export function tabBadgeLabel(panel: 'log' | 'stations', n: number): string {
+  if (panel === 'log') return `${n} ${n === 1 ? 'reading' : 'readings'}`
+  return `${n} listening`
+}
+
+/** Accessible name of a hunting tab: its label, plus the badge when it shows a count ('Log, 4 readings'). */
+export function tabName(panel: HuntPanel, n: number): string {
+  const label = COPY.hunting.tabs[panel]
+  if ((panel !== 'log' && panel !== 'stations') || !(n > 0)) return label
+  return `${label}, ${tabBadgeLabel(panel, n)}`
+}
+
 // ---- Countdown and guidance ----------------------------------------------------------------------
 
+/** Between readings without a confident interval: say what to do (move now), not how long it has been. */
 function waitingText(sinceLastS: number | null): string {
-  return sinceLastS === null
-    ? 'Waiting for the first chirp…'
-    : `Waiting for the next chirp… ${formatClock(sinceLastS)} since the last one`
+  return sinceLastS === null ? 'Waiting for the first chirp…' : 'Move 2–3 m now, then hold still for the next chirp.'
 }
 
 /**
- * One line about the next expected chirp. eta rounds to whole seconds (at least 1);
- * lost and unknown use sinceLastS as m:ss. Empty for null (live mode has no countdown).
+ * The status line under the verdict: what to do right now. Between chirps it says to move (with
+ * the expected time when the interval is confident); from the hold window on it says to freeze.
+ * eta rounds to whole seconds (at least 1); lost shows sinceLastS as m:ss. Empty for null (live
+ * mode has no countdown).
  */
 export function countdownText(countdown: Countdown | null): string {
   if (countdown === null) return ''
   switch (countdown.kind) {
     case 'eta':
       if (countdown.etaS === null) return waitingText(countdown.sinceLastS)
-      return `Next chirp in ~${Math.max(1, Math.round(countdown.etaS))} s`
+      // A no-break space keeps '~23 s' together when the line wraps on a narrow screen.
+      return `Move now · next chirp in ~${Math.max(1, Math.round(countdown.etaS))}\u00a0s`
     case 'hold':
       return 'Hold still…'
     case 'late':
-      return 'Listening… the chirp is a little late'
+      return 'Hold still… chirp is late'
     case 'overdue':
-      return 'Overdue. Chirps can be irregular, so stay still a little longer.'
+      return 'Keep holding still. Chirps can be irregular.'
     case 'lost':
       return countdown.sinceLastS === null
-        ? "Haven't heard it for a while. Keep waiting, or tap Re-listen."
-        : `Haven't heard it for ${formatClock(countdown.sinceLastS)}. Keep waiting, or tap Re-listen.`
+        ? "Haven't heard it for a while. Keep waiting, or tap Listen again."
+        : `Haven't heard it for ${formatClock(countdown.sinceLastS)}. Keep waiting, or tap Listen again.`
     case 'unknown':
       return waitingText(countdown.sinceLastS)
   }
@@ -324,20 +470,22 @@ export function countdownText(countdown: Countdown | null): string {
 
 /** Guidance lines, one per situation (see guidanceText). */
 export const GUIDANCE = {
-  first: 'Now move 2–3 m and wait for the next chirp.',
+  first: 'Now walk 2–3 m in any direction, then hold still for the next chirp.',
   colder: 'Colder. Go back and try another direction.',
+  warmer: 'Warmer. Keep going this way.',
   warmerTwice: 'Warmer twice. Keep going this way.',
+  same: 'About the same. Try a bigger move, 3–5 m.',
   sameTwice: 'About the same twice. Make a bigger move or try another room.',
   veryHot:
     "Very hot. It is probably within arm's reach. Look up: detectors live on ceilings. Check cupboards and drawers for gadgets.",
   live: 'Walk slowly. The meter follows the tone.',
-  default: 'Stand still until the next chirp, read the verdict, then move 2–3 m.',
+  default: 'Move 2–3 m after each chirp, then hold still for the next one.',
 } as const
 
 /**
  * One context-sensitive tip from the latest readings. Priority: live mode (very hot when clipped,
  * else the walk-slowly tip); no reading yet (default); first reading; clipped (very hot); colder;
- * warmer twice; same twice; default.
+ * warmer twice; warmer; same twice; same; default.
  *
  * "Very hot" is claimed only when the microphone clips. The 0..100 meter is relative to the best
  * reading so far, so a high percentage only means "loudest yet", which can still be rooms away.
@@ -355,12 +503,18 @@ export function guidanceText(view: HuntView): string {
   // The reading before `last` (readings normally ends with last; tolerate a view where it does not).
   const lastIdx = readings.findLastIndex((r) => r.id === last.id)
   const prev = (lastIdx >= 0 ? readings[lastIdx - 1] : readings[n - 1]) ?? null
-  if (last.verdict === 'first') return GUIDANCE.first
-  if (last.verdict === 'max') return GUIDANCE.veryHot
-  if (last.verdict === 'colder') return GUIDANCE.colder
-  if (last.verdict === 'warmer' && prev?.verdict === 'warmer') return GUIDANCE.warmerTwice
-  if (last.verdict === 'same' && prev?.verdict === 'same') return GUIDANCE.sameTwice
-  return GUIDANCE.default
+  switch (last.verdict) {
+    case 'first':
+      return GUIDANCE.first
+    case 'max':
+      return GUIDANCE.veryHot
+    case 'colder':
+      return GUIDANCE.colder
+    case 'warmer':
+      return prev?.verdict === 'warmer' ? GUIDANCE.warmerTwice : GUIDANCE.warmer
+    case 'same':
+      return prev?.verdict === 'same' ? GUIDANCE.sameTwice : GUIDANCE.same
+  }
 }
 
 // ---- Direction scan (radar) ----------------------------------------------------------------------
@@ -373,7 +527,6 @@ export const RADAR_COPY = {
   howLive:
     'Hold the phone flat in front of your chest, top pointing away from you. Stay on the spot and turn slowly, one full turn in about 20 seconds.',
   clear: 'Clear scan',
-  done: 'Done',
   starting: 'Waiting for the compass…',
   unavailable: "This device has no compass, so the direction scan can't run here. Use a phone.",
   denied: 'Motion and orientation access was blocked. Allow it in the browser settings to use the direction scan.',
@@ -395,14 +548,19 @@ export const RADAR_COPY = {
   } satisfies Record<Direction8, string>,
 } as const
 
-function measuredSectors(radar: RadarView): number {
+/** Directions (sectors) measured at least once. */
+export function measuredSectors(radar: RadarView): number {
   let n = 0
   for (const s of radar.sectors) if (s.samples > 0) n++
   return n
 }
 
-/** Where the loudest direction is, in words, relative to where the phone points now. */
-function loudestWords(radar: RadarView): string {
+/**
+ * Where the loudest direction is, in words, relative to where the phone points now. `direction`
+ * overrides the eight-way word (the radar panel passes a steadied one, see radarUi.ts).
+ */
+function loudestWords(radar: RadarView, direction: Direction8 | null): string {
+  if (direction !== null) return RADAR_COPY.directions[direction]
   if (radar.bearingDeg === null || radar.headingDeg === null) return 'toward the arrow'
   return RADAR_COPY.directions[direction8(relativeBearing(radar.bearingDeg, radar.headingDeg))]
 }
@@ -410,8 +568,9 @@ function loudestWords(radar: RadarView): string {
 /**
  * Main status line of the scan panel: compass problems, what to do next, or the answer.
  * 'rough' hedges ("Probably ..."); 'clear' states it; 'unclear' explains why there is no answer.
+ * `direction` is the eight-way direction to name (null: computed from the bearing and heading).
  */
-export function radarStatusText(scan: ScanState, mode: LockMode): string {
+export function radarStatusText(scan: ScanState, mode: LockMode, direction: Direction8 | null = null): string {
   switch (scan.status) {
     case 'off':
       return ''
@@ -435,9 +594,9 @@ export function radarStatusText(scan: ScanState, mode: LockMode): string {
     case 'unclear':
       return RADAR_COPY.unclear
     case 'rough':
-      return `Probably ${loudestWords(radar)}. Measure a few more directions to be sure.`
+      return `Probably ${loudestWords(radar, direction)}. Measure a few more directions to be sure.`
     case 'clear':
-      return `Loudest ${loudestWords(radar)}.`
+      return `Loudest ${loudestWords(radar, direction)}.`
   }
 }
 
@@ -457,7 +616,7 @@ export function radarDirectionText(radar: RadarView): string {
   if (radar.headingDeg === null) return ''
   if (radar.bearingDeg !== null) {
     const turn = turnWords(relativeBearing(radar.bearingDeg, radar.headingDeg))
-    const strength = radar.contrastDb === null ? '' : ` · ${Math.round(radar.contrastDb)} dB louder than the quietest side`
+    const strength = radar.contrastDb === null ? '' : ` · ${Math.round(radar.contrastDb)}\u00a0dB louder than the quietest side`
     return `${turn === 'straight ahead' ? 'Straight ahead' : `About ${turn}`}${strength}`
   }
   if (radar.suggestDeg !== null && radar.quality === 'needMore') {
@@ -526,4 +685,343 @@ export function debugText(state: AppState): string {
     }
   }
   return lines.join('\n')
+}
+
+// ---- Log -----------------------------------------------------------------------------------------
+
+/** Static strings of the Log panel (a hunting-screen tab) and of its plain-text export. */
+export const LOG_COPY = {
+  title: 'Log',
+  copy: 'Copy log',
+  empty: 'Each chirp adds a line here. Add a note about where you stood, so you can retrace the warm spots.',
+  listLabel: 'Readings, newest first',
+  notePlaceholder: 'Where were you? e.g. hallway door',
+  /** Marker of a reading that clipped the microphone ... */
+  clipped: 'VERY HOT / clipped',
+  /** ... shortened when the verdict word next to it already says VERY HOT. */
+  clippedShort: 'clipped',
+  /** A reading that sums up a stretch of live mode (a continuous tone or rapid chirps). */
+  live: 'Live',
+  /** Between the parts of a log line, on screen and in the export. */
+  sep: ' · ',
+  exportTitle: 'Soundwave log',
+  exportEmpty: 'No readings yet.',
+  exportNote: 'Note:',
+  /** Toasts for main.ts after Copy log. */
+  copied: 'Log copied.',
+  copyFailed: "Couldn't copy the log. Your browser blocked the clipboard.",
+} as const
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n)
+}
+
+/** Local wall-clock time as 24 h 'HH:MM:SS', independent of the runtime locale; '--:--:--' when invalid. */
+export function formatClockTime(wallMs: number): string {
+  const d = new Date(wallMs)
+  if (Number.isNaN(d.getTime())) return '--:--:--'
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/** The frequency moved more than 1 % from the previous entry's (a drift, or a different beep). */
+function frequencyMoved(f0Hz: number, prevHz: number): boolean {
+  if (!Number.isFinite(f0Hz) || !Number.isFinite(prevHz) || prevHz <= 0) return false
+  return Math.abs(f0Hz - prevHz) > 0.01 * prevHz
+}
+
+/**
+ * Detail parts of a log row after the verdict word, in order: dB change vs the previous reading,
+ * meter position, frequency (only when it moved more than 1 % from `prev`), loudest listener,
+ * merged chirps ('×3 chirps'), live. The clipped marker is separate (logClipText).
+ */
+export function logEntryParts(entry: LogEntry, prev: LogEntry | null): string[] {
+  const parts: string[] = []
+  if (entry.deltaPrevDb !== null && Number.isFinite(entry.deltaPrevDb)) parts.push(formatDelta(entry.deltaPrevDb))
+  if (entry.pct !== null && Number.isFinite(entry.pct)) parts.push(`${formatPct(entry.pct)} of 100`)
+  if (prev !== null && frequencyMoved(entry.f0Hz, prev.f0Hz)) parts.push(formatHz(entry.f0Hz))
+  const loudest = entry.loudest?.trim() ?? ''
+  if (loudest !== '') parts.push(`Loudest: ${loudest}`)
+  if (entry.chirpCount > 1) parts.push(`×${entry.chirpCount} chirps`)
+  if (entry.source === 'train') parts.push(LOG_COPY.live)
+  return parts
+}
+
+/** Clipped marker of a log row, or null when the reading did not clip. */
+export function logClipText(entry: LogEntry): string | null {
+  if (!entry.clipped) return null
+  return entry.verdict === 'max' ? LOG_COPY.clippedShort : LOG_COPY.clipped
+}
+
+/** One line per reading: 'WARMER · +4 dB · 72 of 100 · Loudest: Kitchen' (verdict, clipped marker, parts). */
+export function logEntrySummary(entry: LogEntry, prev: LogEntry | null): string {
+  const parts = [verdictLabel(entry.verdict)]
+  const clip = logClipText(entry)
+  if (clip !== null) parts.push(clip)
+  parts.push(...logEntryParts(entry, prev))
+  return parts.join(LOG_COPY.sep)
+}
+
+/** Reading count in the log header: '1 reading', '12 readings'. */
+export function logCountText(n: number): string {
+  return n === 1 ? '1 reading' : `${n} readings`
+}
+
+/** Accessible name of a row's note field: 'Note for the 03:04:05 reading'. */
+export function logNoteLabel(time: string): string {
+  return `Note for the ${time} reading`
+}
+
+/**
+ * Plain-text export for Copy log: the header 'Soundwave log - 3,100 Hz' (just 'Soundwave log' when
+ * the frequency is unknown), then one line per reading, oldest first, with its note:
+ * '03:04:05 WARMER · +4 dB · 72 of 100 · Note: hallway door'.
+ */
+export function logAsText(log: readonly LogEntry[], f0Hz: number | null): string {
+  const head =
+    f0Hz !== null && Number.isFinite(f0Hz) ? `${LOG_COPY.exportTitle} - ${formatHz(f0Hz)}` : LOG_COPY.exportTitle
+  const lines = [head]
+  if (log.length === 0) lines.push(LOG_COPY.exportEmpty)
+  log.forEach((entry, i) => {
+    const note = entry.note.replace(/\s+/g, ' ').trim()
+    const noteText = note === '' ? '' : `${LOG_COPY.sep}${LOG_COPY.exportNote} ${note}`
+    lines.push(`${formatClockTime(entry.wallMs)} ${logEntrySummary(entry, log[i - 1] ?? null)}${noteText}`)
+  })
+  return lines.join('\n')
+}
+
+// ---- Stations: extra microphones and other devices -----------------------------------------------
+
+/**
+ * Static strings of the Stations panel (hub side), its pairing flow and the station screen.
+ * 'Wi‑Fi' is written with a non-breaking hyphen (U+2011), so it never splits across two lines.
+ */
+export const STATIONS_COPY = {
+  title: 'Stations',
+  /** Name main.ts gives this device's own listener ('self') on a phone; lower-cased mid-sentence. */
+  selfName: 'This phone',
+  /** The same on a device without haptics (a laptop or tablet); lower-cased mid-sentence. */
+  selfNameDevice: 'This device',
+  kinds: {
+    self: 'This phone',
+    mic: 'Microphone',
+    station: 'Station',
+  } satisfies Record<ListenerKind, string>,
+  statuses: {
+    listening: 'Listening',
+    connecting: 'Connecting…',
+    lost: 'Lost – out of range?',
+  } satisfies Record<ListenerStatus, string>,
+  empty: 'Add phones in other rooms, or extra microphones, to see which one hears the beep loudest.',
+  waiting: 'Waiting for the next chirp',
+  waitingDetail: "On every chirp, each listener's level is compared.",
+  singleDetail: 'The others may be too far away to hear it.',
+  tooClose: 'Too close to call',
+  listLabel: 'Listeners',
+  loudest: 'loudest',
+  /** Screen-reader context before a listener's level difference ('−6 dB'). */
+  deltaPrefix: 'compared with the loudest:',
+  removeConfirm: 'Remove?',
+  addPhone: 'Add a phone',
+  addMic: 'Add a microphone',
+  calibrate: 'Calibrate',
+  calibrateHint: 'Put all devices side by side, then wait for one chirp.',
+  calibrating: 'Calibrating… waiting for a chirp heard by every device',
+  calibrated: 'Calibrated. Now put each device in its room.',
+  privacy: 'Only loudness numbers travel between devices, never audio. They connect directly over your Wi‑Fi.',
+  pair: {
+    step1: 'Add a phone · step 1 of 2',
+    step2: 'Add a phone · step 2 of 2',
+    preparing: 'Preparing a code…',
+    showOfferTitle: 'Scan this code with the other phone',
+    showOfferHelp: 'On the other phone, open this page and choose Use this device as a station. Then scan this code.',
+    qrLabel: 'Pairing code',
+    codeText: 'Pairing code as text',
+    copy: 'Copy code',
+    share: 'Share',
+    then: 'When the other phone shows its reply code:',
+    scanAnswer: 'Scan their reply',
+    pasteAnswer: 'Paste their reply',
+    scanHelp: "Point this phone's camera at the reply code on the other phone.",
+    pasteHelp: 'On the other phone, tap Copy code or Share, send the code to this device and paste it here.',
+    pasteLabel: 'Reply code',
+    pastePlaceholder: 'SW1.…',
+    connect: 'Connect',
+    showCode: 'Show my code again',
+    connecting: 'Connecting…',
+    connectingHint: 'Both devices need to be on the same Wi‑Fi.',
+    errorTitle: "Couldn't connect",
+    errorFallback: 'Something went wrong. Try again.',
+    tryAgain: 'Try again',
+    /** Error after a wrong reply code (the hub kept its code): the way out is a new code. */
+    newCode: 'Start again with a new code',
+    cancel: 'Cancel',
+  },
+  scan: {
+    label: 'Camera view for scanning the code',
+    starting: 'Starting the camera…',
+    notOurs: 'That QR code is not a Soundwave pairing code.',
+    failed: 'The camera could not be started. Paste the code instead.',
+    retry: 'Try the camera again',
+    qrFailed: "This code can't be shown as a QR code. Copy it instead.",
+  },
+  station: {
+    titles: {
+      name: 'Use this device as a station',
+      starting: 'Opening the microphone…',
+      scanOffer: 'Scan the code shown on the main phone',
+      pasteOffer: 'Paste the code from the main phone',
+      answering: 'Preparing the reply…',
+      showAnswer: 'Now show this code to the main phone',
+      connected: 'Connected',
+      lost: 'Connection lost',
+      error: 'Something went wrong',
+    } satisfies Record<StationStep, string>,
+    step1: 'Step 1 of 2',
+    step2: 'Step 2 of 2',
+    intro:
+      "Leave this device in another room. It listens at the main phone's frequency and sends only loudness numbers – no audio – over your Wi‑Fi.",
+    nameLabel: 'Name shown on the main phone',
+    namePlaceholder: 'e.g. Kitchen',
+    start: 'Start',
+    startCaption: 'Uses the microphone, and the camera to scan a code. Your browser will ask for permission.',
+    back: 'Back',
+    startingHint: 'Choose Allow when your browser asks.',
+    scanHelp: 'On the main phone, open the Stations tab and tap Add a phone. Then point this camera at the code it shows.',
+    pasteInstead: 'Paste the code instead',
+    pasteHelp: 'On the main phone, tap Copy code or Share, send the code to this device and paste it here.',
+    pasteLabel: 'Code from the main phone',
+    continue: 'Continue',
+    scanInstead: 'Scan instead',
+    answerHelp: 'On the main phone, tap Scan their reply and point it at this code.',
+    answerQrLabel: 'Reply code',
+    answerText: 'Reply code as text',
+    waitingForHub: 'Waiting for the main phone to connect…',
+    startOver: 'Start over',
+    waitingLock: 'Waiting for the main phone to lock onto the beep',
+    level: 'Level',
+    lastChirp: 'Last chirp',
+    noChirp: 'None yet',
+    chirpsSent: 'Chirps sent',
+    keepOn: 'Keep this screen on. Put the phone down with the microphone uncovered.',
+    privacy: 'Only loudness numbers are sent, never audio.',
+    stop: 'Stop station',
+    stopShort: 'Stop',
+    lostBody: "The main phone can't be reached. It may be out of Wi‑Fi range, or its hunt has stopped. This device keeps listening.",
+    pairAgain: 'Pair again',
+    tryAgain: 'Try again',
+    errorFallback: 'Something went wrong.',
+  },
+} as const
+
+/** Kind label of a listener: 'This phone', 'Microphone' or 'Station'. */
+export function listenerKindText(kind: ListenerKind): string {
+  return STATIONS_COPY.kinds[kind]
+}
+
+/** Status of a listener in words ('Listening', 'Connecting…', 'Lost – out of range?'), never colour alone. */
+export function listenerStatusText(status: ListenerStatus): string {
+  return STATIONS_COPY.statuses[status]
+}
+
+/** A calibrated level in whole dB with a real minus sign ('−42 dB'); the placeholder when unknown. */
+export function listenerLevelText(db: number | null): string {
+  if (db === null || !Number.isFinite(db)) return NO_VALUE
+  const r = roundSym(db)
+  return `${r < 0 ? MINUS : ''}${Math.abs(r)} dB`
+}
+
+/**
+ * A listener's level against the top of the last comparison: 'loudest' for the named loudest
+ * listener, otherwise the whole-dB difference ('−6 dB'; '0 dB' for an undecided top, never
+ * positive); '' when the listener has no level in that comparison.
+ */
+export function listenerDeltaText(view: ListenerView): string {
+  if (view.levelDb === null) return ''
+  if (view.isLoudest) return STATIONS_COPY.loudest
+  if (view.deltaDb === null || !Number.isFinite(view.deltaDb)) return ''
+  return formatDelta(Math.min(0, view.deltaDb))
+}
+
+export type StationsHeadlineKind = 'empty' | 'waiting' | 'single' | 'loudest' | 'close'
+
+/** Summary at the top of the Stations panel; title is '' for 'empty' (the detail explains). */
+export interface StationsHeadline {
+  readonly kind: StationsHeadlineKind
+  readonly title: string
+  readonly detail: string
+}
+
+/**
+ * Summary of the last comparison: 'Loudest: Kitchen' + '8 dB louder than Hall' when a listener
+ * was named (marginDb, rounded), 'Too close to call' when not, 'Only Kitchen heard it' when a
+ * single listener reported, a waiting line before any comparison, and an explanation when there
+ * is no listener besides this device. This device's own name reads 'this phone' mid-sentence.
+ */
+export function comparisonHeadline(comparison: Comparison | null, listeners: readonly ListenerView[]): StationsHeadline {
+  const S = STATIONS_COPY
+  if (!listeners.some((l) => l.kind !== 'self')) return { kind: 'empty', title: '', detail: S.empty }
+  const ranking = comparison?.ranking ?? []
+  const first = ranking[0]
+  if (comparison === null || first === undefined) return { kind: 'waiting', title: S.waiting, detail: S.waitingDetail }
+  const name = (e: ComparisonEntry, start: boolean): string => {
+    const isSelf = listeners.some((l) => l.id === e.id && l.kind === 'self')
+    const generic = e.name === S.selfName || e.name === S.selfNameDevice
+    return !start && isSelf && generic ? e.name.toLowerCase() : e.name
+  }
+  const second = ranking[1]
+  if (second === undefined) return { kind: 'single', title: `Only ${name(first, false)} heard it`, detail: S.singleDetail }
+  const loud = comparison.loudestId === null ? undefined : ranking.find((e) => e.id === comparison.loudestId)
+  if (loud !== undefined) {
+    const runner = ranking.find((e) => e.id !== loud.id) ?? second
+    const margin = comparison.marginDb ?? loud.levelDb - runner.levelDb
+    const detail =
+      loud.clipped && !runner.clipped
+        ? `Louder than ${name(runner, false)}: too loud to measure exactly`
+        : `${Math.abs(roundSym(Number.isFinite(margin) ? margin : 0))} dB louder than ${name(runner, false)}`
+    return { kind: 'loudest', title: `Loudest: ${name(loud, true)}`, detail }
+  }
+  return {
+    kind: 'close',
+    title: S.tooClose,
+    detail: `${name(first, true)} and ${name(second, false)} heard it about equally loud.`,
+  }
+}
+
+/** Button text for an extra microphone: its label, or 'Other microphone 1' while labels are hidden. */
+export function micButtonText(label: string, index: number): string {
+  const t = label.trim()
+  return t === '' ? `Other microphone ${index + 1}` : t
+}
+
+/** Accessible name of a listener's remove button; armed = waiting for the confirming second tap. */
+export function removeListenerLabel(name: string, armed: boolean): string {
+  return armed ? `Tap again to remove ${name}` : `Remove ${name}`
+}
+
+/** Heading of the station screen for each step. */
+export function stationTitle(step: StationStep): string {
+  return STATIONS_COPY.station.titles[step]
+}
+
+/** Name line of a connected station: 'This station: Kitchen'. */
+export function stationNameText(name: string): string {
+  return `This station: ${name}`
+}
+
+/** 'Listening at 3,100 Hz', or the waiting line while the main phone has no lock yet. */
+export function stationFreqText(f0Hz: number | null): string {
+  if (f0Hz === null || !Number.isFinite(f0Hz) || f0Hz <= 0) return STATIONS_COPY.station.waitingLock
+  return `Listening at ${formatHz(f0Hz)}`
+}
+
+/** The last chirp a station sent: '−42 dB · 14:32:05' (local 24 h time); 'None yet' before the first. */
+export function stationLastChirpText(db: number | null, wallMs: number | null): string {
+  if (db === null || !Number.isFinite(db)) return STATIONS_COPY.station.noChirp
+  const level = listenerLevelText(db)
+  return wallMs === null || !Number.isFinite(wallMs) ? level : `${level} · ${formatClockTime(wallMs)}`
+}
+
+/** Chirps a station has sent, grouped: '1,204'. */
+export function stationChirpsText(n: number): string {
+  return groupThousands(Number.isFinite(n) && n > 0 ? Math.round(n) : 0)
 }

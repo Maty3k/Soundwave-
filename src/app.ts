@@ -2,19 +2,62 @@
  * App state machine: a pure reducer over AppState plus a tiny store. No DOM, no audio.
  *
  * Screens: idle -> requesting -> listening -> locked (banner) -> hunting, with paused and error
- * branches. Events that do not apply to the current screen return the SAME state object, so the
- * store (and anything comparing references) can skip work. Times are ms on the caller's clock
- * (performance.now() in the app); events that carry nowMs also advance state.nowMs.
+ * branches, plus idle -> station (this device listens for another device's hunt). Events that do
+ * not apply to the current screen return the SAME state object, so the store (and anything
+ * comparing references) can skip work. Times are ms on the caller's clock (performance.now() in
+ * the app); events that carry nowMs also advance state.nowMs.
  */
 import type { Config } from './config.ts'
-import type { AppEvent, AppState, Capabilities, PausedFrom, ScanState, Screen, Settings } from './types.ts'
+import type {
+  AppEvent,
+  AppState,
+  Capabilities,
+  HuntPanel,
+  LogEntry,
+  PausedFrom,
+  ScanState,
+  Screen,
+  Settings,
+  StationModeView,
+} from './types.ts'
 
 const IDLE: Screen = Object.freeze({ kind: 'idle' })
 const HUNTING: Screen = Object.freeze({ kind: 'hunting' })
+const STATION: Screen = Object.freeze({ kind: 'station' })
 /** Direction scan closed (the only scan state outside the hunting screen). */
 export const SCAN_CLOSED: ScanState = Object.freeze({ open: false, status: 'off', radar: null })
+const NO_LOG: readonly LogEntry[] = Object.freeze([])
+const METER: HuntPanel = 'meter'
 
-/** Fresh state on the landing screen: mic level 0, no mic, lock, hunt, toast or pending dialogs. */
+/** Longest a toast stays up, however long its text (audit item 14). */
+export const TOAST_MAX_MS = 10_000
+/** Toast time = TOAST_BASE_MS + TOAST_PER_CHAR_MS per character, capped at TOAST_MAX_MS. */
+export const TOAST_BASE_MS = 2_000
+export const TOAST_PER_CHAR_MS = 55
+
+/** How long a toast with this text stays up: long enough to read, at most TOAST_MAX_MS. */
+export function toastDurationMs(text: string): number {
+  return Math.min(TOAST_MAX_MS, TOAST_BASE_MS + TOAST_PER_CHAR_MS * text.length)
+}
+
+/**
+ * Station screen state before main reports anything (main replaces it with its own view right
+ * after 'stationStart'), so the station screen can rely on stationMode being present there.
+ */
+export const STATION_INITIAL: StationModeView = Object.freeze({
+  step: 'name',
+  name: '',
+  answerCode: null,
+  f0Hz: null,
+  level: 0,
+  lastChirpDb: null,
+  lastChirpAtMs: null,
+  chirpsSent: 0,
+  message: null,
+  canScan: false,
+})
+
+/** Fresh state on the landing screen: mic level 0, no mic, lock, hunt, toast, log or pending dialogs. */
 export function initialState(caps: Capabilities, settings: Settings, debug: boolean, nowMs: number): AppState {
   return {
     screen: IDLE,
@@ -30,12 +73,34 @@ export function initialState(caps: Capabilities, settings: Settings, debug: bool
     wakeLockFailed: false,
     debug,
     scan: SCAN_CLOSED,
+    pending: null,
+    panel: METER,
+    log: NO_LOG,
+    stations: null,
+    stationMode: null,
   }
 }
 
-/** Back to the landing screen, dropping the session (mic, lock, hunt) but keeping settings and toast. */
+/**
+ * Back to the landing screen, dropping the session (mic, lock, hunt, pending beep, log, station
+ * view) but keeping settings, toast and the stations view (main owns the hub's lifetime and
+ * dispatches `stations: null` when it tears the hub down).
+ */
 function toIdle(state: AppState): AppState {
-  return { ...state, screen: IDLE, mic: null, micLevel: 0, lock: null, hunt: null, confirmStop: false, scan: SCAN_CLOSED }
+  return {
+    ...state,
+    screen: IDLE,
+    mic: null,
+    micLevel: 0,
+    lock: null,
+    hunt: null,
+    confirmStop: false,
+    scan: SCAN_CLOSED,
+    pending: null,
+    panel: METER,
+    log: NO_LOG,
+    stationMode: null,
+  }
 }
 
 /** Where a paused session came from; the locked banner is skipped on return (it resumes as hunting). */
@@ -67,6 +132,33 @@ function clamp01(x: number): number {
   return x > 0 ? (x < 1 ? x : 1) : 0 // NaN -> 0
 }
 
+/** At most `max` UTF-16 units, never splitting a surrogate pair (an emoji typed into a note). */
+function truncate(text: string, max: number): string {
+  const n = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : 0
+  if (text.length <= n) return text
+  const code = n > 0 ? text.charCodeAt(n - 1) : 0
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n)
+}
+
+/**
+ * Insert a log entry, or replace the entry with the same id in place, keeping its note (a merged
+ * chirp group updates its reading). New entries are appended, so the log stays in arrival order
+ * (oldest first) even when reading ids restart; the oldest entries are dropped beyond
+ * cfg.logMaxEntries.
+ */
+function upsertLog(log: readonly LogEntry[], entry: LogEntry, cfg: Config): readonly LogEntry[] {
+  const i = log.findIndex((e) => e.id === entry.id)
+  if (i >= 0) {
+    const old = log[i]!
+    const copy = log.slice()
+    copy[i] = old.note === entry.note ? entry : { ...entry, note: old.note }
+    return copy
+  }
+  const max = Number.isFinite(cfg.logMaxEntries) ? Math.max(0, Math.floor(cfg.logMaxEntries)) : 0
+  const appended = [...log, entry]
+  return appended.length > max ? appended.slice(appended.length - max) : appended
+}
+
 /**
  * Pure transition function (see the table in docs/PLAN.md section 4 and the module header).
  * Returns `state` itself when the event does not apply or changes nothing.
@@ -87,6 +179,7 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
         mic: event.mic,
         lock: null,
         hunt: null,
+        pending: null,
       }
 
     case 'micError':
@@ -96,11 +189,21 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
 
     case 'lock':
       if (screen.kind !== 'listening') return state
-      return { ...state, nowMs: event.nowMs, screen: { kind: 'locked', sinceMs: event.nowMs }, lock: event.lock }
+      return {
+        ...state,
+        nowMs: event.nowMs,
+        screen: { kind: 'locked', sinceMs: event.nowMs },
+        lock: event.lock,
+        pending: null,
+      }
 
     case 'confirmLock':
       if (screen.kind !== 'locked') return state
       return { ...state, screen: HUNTING }
+
+    case 'holdLock':
+      if (screen.kind !== 'locked' || screen.held === true) return state
+      return { ...state, screen: { ...screen, held: true } }
 
     case 'notIt':
       if (screen.kind !== 'locked') return state
@@ -111,6 +214,7 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
         lock: null,
         hunt: null,
         confirmStop: false,
+        pending: null,
       }
 
     case 'hunt':
@@ -119,6 +223,7 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
       return { ...state, hunt: event.view }
 
     case 'relisten':
+      // The log is kept: listening again is part of the same search.
       if (screen.kind !== 'hunting') return state
       return {
         ...state,
@@ -128,6 +233,8 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
         hunt: null,
         confirmStop: false,
         scan: SCAN_CLOSED,
+        pending: null,
+        panel: METER,
       }
 
     case 'resetBest':
@@ -194,8 +301,11 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
       const nowMs = event.nowMs
       const micLevel = event.micLevel === undefined ? state.micLevel : clamp01(event.micLevel)
       const toast = state.toast !== null && state.toast.untilMs <= nowMs ? null : state.toast
+      // A held banner (the user touched it) waits for Start hunting or Wrong sound.
       const next =
-        screen.kind === 'locked' && nowMs - screen.sinceMs >= cfg.lockedBannerMs ? HUNTING : screen
+        screen.kind === 'locked' && screen.held !== true && nowMs - screen.sinceMs >= cfg.lockedBannerMs
+          ? HUNTING
+          : screen
       if (nowMs === state.nowMs && micLevel === state.micLevel && toast === state.toast && next === screen) {
         return state
       }
@@ -203,7 +313,11 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
     }
 
     case 'toast':
-      return { ...state, nowMs: event.nowMs, toast: { text: event.text, untilMs: event.nowMs + cfg.toastMs } }
+      return {
+        ...state,
+        nowMs: event.nowMs,
+        toast: { text: event.text, untilMs: event.nowMs + toastDurationMs(event.text) },
+      }
 
     case 'settings': {
       // Only boolean fields are merged: a key present with the value undefined (possible from
@@ -231,6 +345,46 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
 
     case 'scanClose':
       return state.scan.open ? { ...state, scan: SCAN_CLOSED } : state
+
+    case 'pending':
+      if (screen.kind !== 'listening' || event.pending === state.pending) return state
+      return { ...state, pending: event.pending }
+
+    case 'panel':
+      // Choosing a panel neither opens nor closes the direction scan: main does that in onPanel.
+      if (screen.kind !== 'hunting' || event.panel === state.panel) return state
+      if (event.panel === 'direction' && !state.caps.compass) return state
+      return { ...state, panel: event.panel }
+
+    case 'logUpsert':
+      if (screen.kind !== 'hunting' && screen.kind !== 'locked') return state
+      return { ...state, log: upsertLog(state.log, event.entry, cfg) }
+
+    case 'logNote': {
+      const i = state.log.findIndex((e) => e.id === event.id)
+      if (i < 0) return state
+      const note = truncate(event.note, cfg.logNoteMaxLength)
+      const old = state.log[i]!
+      if (old.note === note) return state
+      const log = state.log.slice()
+      log[i] = { ...old, note }
+      return { ...state, log }
+    }
+
+    case 'stations':
+      return event.view === state.stations ? state : { ...state, stations: event.view }
+
+    case 'stationStart':
+      if (screen.kind !== 'idle') return state
+      return { ...state, screen: STATION, stationMode: STATION_INITIAL }
+
+    case 'stationView':
+      if (screen.kind !== 'station' || event.view === state.stationMode) return state
+      return { ...state, stationMode: event.view }
+
+    case 'stationStop':
+      if (screen.kind !== 'station') return state
+      return toIdle(state)
 
     default:
       // Unknown event (only possible from untyped callers): leave the state alone.

@@ -4,13 +4,19 @@
  * Every frame, findPeaks lists narrowband candidates in the search band. A small tracker strings
  * candidates at a stable frequency together; a track that closes after persisting briefly with a
  * steady frequency is a "sighting" (one heard chirp). The lock policy then decides:
- * - fast: one sighting whose best per-bin SNR reaches fastLockSnrDb;
- * - slow: two sightings at >= slowLockSnrDb, within lock tolerance and >= slowLockGapMs apart;
+ * - fast (only with config.lockConfirmChirps 1): one sighting whose best per-bin SNR reaches
+ *   fastLockSnrDb;
+ * - slow: two sightings at >= slowLockSnrDb, within lock tolerance and >= slowLockGapMs apart (with
+ *   lockConfirmChirps 2 this is the only way a chirp locks: the second sighting confirms the first);
  * - sustained: a stable track that is still open after sustainedLockMs (continuous tone, live mode).
+ * config.lockConfirmChirps is limited to 1 or 2: values above 2 act as 2 (a confirmed pair is the
+ * most the slow-lock rules express), values below 2 act as 1, and NaN acts as the default 2.
+ * While it waits, pendingBeep tells the UI what has been heard so far, and lockFromPending ("Use it
+ * now") locks on that without waiting for the confirmation.
  * Pure and deterministic; no DOM or Web Audio.
  */
 import type { Config } from '../config.ts'
-import type { Chirp, Frame, Lock, Peak } from '../types.ts'
+import type { Chirp, Frame, Lock, Peak, PendingBeep } from '../types.ts'
 import { bandFloorDb, bandLevelDb, localFloorDb, lockToleranceBins, parabolicPeak, peakWidthBins } from './spectrum.ts'
 
 /** Options fixed for the lifetime of one detector. */
@@ -64,8 +70,9 @@ export interface DetectorState {
   readonly excludeHz: readonly number[]
   readonly tracks: Track[]
   /**
-   * Sightings that reached slowLockSnrDb, in the order their tracks closed (a long track can close
-   * after a later, shorter one, so this is not onset order). Forgotten after slowLockMemoryMs.
+   * Sightings that reached slowLockSnrDb and found no partner, in the order their tracks closed (a
+   * long track can close after a later, shorter one, so this is not onset order). Forgotten after
+   * slowLockMemoryMs. pendingBeep and lockFromPending read them.
    */
   readonly memory: Sighting[]
   /** Circular buffer of each frame's strongest peak (see recentPeaks). */
@@ -76,8 +83,10 @@ export interface DetectorState {
   /** Bin width (Hz) and time (ms) of the previous frame; 0 and -Infinity before the first one. */
   binHz: number
   lastMs: number
-  /** A Lock has been returned; the detector is finished. */
+  /** A Lock has been returned (by detectStep or lockFromPending); the detector is finished. */
   done: boolean
+  /** The last value pendingBeep returned, handed out again while it is unchanged (stable identity). */
+  lastPending: PendingBeep | null
 }
 
 /**
@@ -98,6 +107,7 @@ export function createDetector(cfg: Config, opts: DetectorOptions = {}): Detecto
     binHz: 0,
     lastMs: -Infinity,
     done: false,
+    lastPending: null,
   }
 }
 
@@ -217,6 +227,57 @@ export function recentPeaks(state: DetectorState, nowMs: number, windowMs: numbe
     if (p != null && t > nowMs - windowMs && t <= nowMs) out.push(p)
   }
   return out
+}
+
+/**
+ * The beep heard so far that is most worth showing while listening waits for the confirming chirp,
+ * or null when there is none (or the detector has already returned a Lock).
+ *
+ * Only remembered sightings that could still lock count: best per-bin SNR >= slowLockSnrDb, onset
+ * at most slowLockMemoryMs before nowMs, and not within lock tolerance of an excluded frequency. A
+ * group is one of them plus every other one within lockToleranceBins of it (compared in Hz, so
+ * sightings from before a change of bin width still group). The group with the most sightings
+ * wins, then the one with the highest SNR, then the most recent one. f0Hz is the group's mean
+ * frequency, snrDb its best per-bin SNR, heardAtMs its latest onset (the time a hunt reading of that
+ * chirp carries). A double chirp shows as 2 sightings although it does not lock (its two chirps are
+ * closer than slowLockGapMs). Only chirps that have ended count: nothing shows while the first one
+ * is still sounding.
+ *
+ * nowMs is on the frames' clock (frame.tMs). Call it after each detectStep; it never changes what
+ * the detector locks on. While the result is unchanged it returns the same object as the previous
+ * call, so a caller can skip an update by comparing references.
+ */
+export function pendingBeep(state: DetectorState, nowMs: number, cfg: Config): PendingBeep | null {
+  const group = pendingGroup(state, nowMs, cfg)
+  const beep = group.length === 0 ? null : summarise(group)
+  const prev = state.lastPending
+  if (beep !== null && prev !== null && samePending(beep, prev)) return prev
+  state.lastPending = beep
+  return beep
+}
+
+/**
+ * "Use it now": lock on the beep that pendingBeep(state, nowMs, cfg) shows, without waiting for the
+ * confirming chirp. Returns a Lock { mode 'chirp', reason 'manual', f0Hz and snrDb as pendingBeep
+ * reports them, tMs nowMs, chirps: the group's sightings, oldest onset first } and finishes the
+ * detector (detectStep returns null from then on); null whenever pendingBeep would return null,
+ * including after detectStep has returned a Lock (a tap racing an automatic lock). nowMs is on the
+ * frames' clock. The caller starts the hunt from this Lock exactly as from one of detectStep.
+ */
+export function lockFromPending(state: DetectorState, nowMs: number, cfg: Config): Lock | null {
+  const group = pendingGroup(state, nowMs, cfg)
+  if (group.length === 0) return null
+  const beep = summarise(group)
+  state.done = true
+  state.lastPending = null
+  return {
+    f0Hz: beep.f0Hz,
+    mode: 'chirp',
+    reason: 'manual',
+    tMs: nowMs,
+    snrDb: beep.snrDb,
+    chirps: group.map((s) => s.chirp),
+  }
 }
 
 // ---- Internals ---------------------------------------------------------------------------------
@@ -348,20 +409,33 @@ function toSighting(t: Track, cfg: Config): Sighting | null {
 }
 
 /**
- * Fast lock first, then slow lock; remembers slow-lock-worthy sightings that found no partner.
- * A slow lock pairs with the qualifying remembered sighting that started most recently.
+ * Chirps the lock policy waits for: config.lockConfirmChirps limited to 1 or 2. Values above 2 act
+ * as 2 (a confirmed pair is the most the slow-lock rules express) and values below 2 act as 1; a
+ * value that is not a number (NaN) acts as the default 2, so a broken setting never re-enables the
+ * single-chirp lock.
+ */
+function confirmChirps(cfg: Config): 1 | 2 {
+  return cfg.lockConfirmChirps < 2 ? 1 : 2
+}
+
+/**
+ * Fast lock first (lockConfirmChirps 1 only), then slow lock; remembers slow-lock-worthy sightings
+ * that found no partner. A slow lock pairs with the qualifying remembered sighting that started
+ * most recently.
  */
 function lockFromSightings(state: DetectorState, sightings: readonly Sighting[], nowMs: number, cfg: Config): Lock | null {
   const memory = state.memory
   forgetOld(memory, nowMs, cfg)
   if (sightings.length === 0) return null
 
-  let fast: Sighting | null = null
-  for (const s of sightings) {
-    if (s.maxSnrDb >= cfg.fastLockSnrDb && (fast === null || s.maxSnrDb > fast.maxSnrDb)) fast = s
-  }
-  if (fast !== null) {
-    return { f0Hz: fast.chirp.f0Hz, mode: 'chirp', reason: 'fast', tMs: nowMs, snrDb: fast.maxSnrDb, chirps: [fast.chirp] }
+  if (confirmChirps(cfg) === 1) {
+    let fast: Sighting | null = null
+    for (const s of sightings) {
+      if (s.maxSnrDb >= cfg.fastLockSnrDb && (fast === null || s.maxSnrDb > fast.maxSnrDb)) fast = s
+    }
+    if (fast !== null) {
+      return { f0Hz: fast.chirp.f0Hz, mode: 'chirp', reason: 'fast', tMs: nowMs, snrDb: fast.maxSnrDb, chirps: [fast.chirp] }
+    }
   }
 
   for (const s of sightings) {
@@ -386,6 +460,60 @@ function lockFromSightings(state: DetectorState, sightings: readonly Sighting[],
     memory.push(s)
   }
   return null
+}
+
+/** The remembered sightings pendingBeep summarises (see there), oldest onset first; empty when none. */
+function pendingGroup(state: DetectorState, nowMs: number, cfg: Config): Sighting[] {
+  if (state.done) return []
+  const usable = state.memory.filter(
+    (s) =>
+      s.maxSnrDb >= cfg.slowLockSnrDb &&
+      nowMs - s.chirp.tOnsetMs <= cfg.slowLockMemoryMs &&
+      !isExcluded(s.chirp.f0Hz / s.binHz, s.binHz, state.excludeHz, cfg),
+  )
+  let best: Sighting[] = []
+  let bestSnrDb = -Infinity
+  let bestLatestMs = -Infinity
+  for (const seed of usable) {
+    const tol = lockToleranceBins(seed.chirp.f0Hz, seed.binHz, cfg.lockTolPct, cfg.lockTolMinBins)
+    const group = usable.filter((s) => Math.abs(s.chirp.f0Hz - seed.chirp.f0Hz) / seed.binHz <= tol)
+    let snrDb = -Infinity
+    let latestMs = -Infinity
+    for (const s of group) {
+      snrDb = Math.max(snrDb, s.maxSnrDb)
+      latestMs = Math.max(latestMs, s.chirp.tOnsetMs)
+    }
+    const better =
+      group.length !== best.length
+        ? group.length > best.length
+        : snrDb !== bestSnrDb
+          ? snrDb > bestSnrDb
+          : latestMs > bestLatestMs
+    if (better) {
+      best = group
+      bestSnrDb = snrDb
+      bestLatestMs = latestMs
+    }
+  }
+  return best.sort((a, b) => a.chirp.tOnsetMs - b.chirp.tOnsetMs)
+}
+
+/** A non-empty sighting group as a PendingBeep: mean frequency, best SNR, latest onset, count. */
+function summarise(group: readonly Sighting[]): PendingBeep {
+  let sumHz = 0
+  let snrDb = -Infinity
+  let heardAtMs = -Infinity
+  for (const s of group) {
+    sumHz += s.chirp.f0Hz
+    snrDb = Math.max(snrDb, s.maxSnrDb)
+    heardAtMs = Math.max(heardAtMs, s.chirp.tOnsetMs)
+  }
+  return { f0Hz: sumHz / group.length, snrDb, heardAtMs, sightings: group.length }
+}
+
+/** Field-by-field equality of two pending beeps. */
+function samePending(a: PendingBeep, b: PendingBeep): boolean {
+  return a.f0Hz === b.f0Hz && a.snrDb === b.snrDb && a.heardAtMs === b.heardAtMs && a.sightings === b.sightings
 }
 
 /** Drop remembered sightings that started more than slowLockMemoryMs before nowMs, wherever they sit. */

@@ -2,11 +2,18 @@
  * DOM rendering for every screen, without a framework.
  *
  * mountUi builds the shell once; render(state) is called at most once per animation frame. A
- * screen's DOM is rebuilt only when its identity changes (screen kind, paused needsGesture or error
- * code; the stop dialog is its own layer, rebuilt when confirmStop flips). Everything else is
+ * screen's DOM is rebuilt only when its identity changes (screen kind, paused origin and
+ * needsGesture, or error code); the confirmation dialog is its own layer. Everything else is
  * patched in place: text via textContent (never innerHTML), attributes, and CSS custom properties
- * (--pct, --ghost, --heat, --level, --p). Each patch is skipped when the value did not change,
+ * (--pct, --ghost, --best, --level, --p). Each patch is skipped when the value did not change,
  * because render runs about 60 times per second while hunting.
+ *
+ * Hunting screen, top to bottom: one-row top bar (frequency, mode, Clicks, Vibrate), the verdict
+ * hero, the status bar ("what to do now": move, or hold still), a tab row (Meter, Direction when
+ * there is a compass, Log, Stations) with the selected panel under it, and a sticky bottom bar
+ * (Listen again, Stop). Tabs follow state.panel; choosing one calls handlers.onPanel, and main
+ * opens or closes the compass in reaction. The Log and Stations panels come from src/ui/ and are
+ * created the first time their tab opens and rendered only while it is open.
  */
 import type { Config } from './config.ts'
 import {
@@ -15,6 +22,7 @@ import {
   debugText,
   deltaLine,
   ERROR_COPY,
+  errorBody,
   formatClock,
   formatHz,
   formatPct,
@@ -24,13 +32,34 @@ import {
   heroLabel,
   historyItemLabel,
   historyItemText,
+  liveAnnouncement,
   liveDeltaLine,
   meterValueText,
+  pendingSightingsText,
+  pendingText,
+  PERMISSION_HELP,
   rawAudioText,
+  readingAnnouncement,
+  tabName,
 } from './copy.ts'
-import type { ErrorAction } from './copy.ts'
-import type { AppState, ErrorCode, HuntView, LockMode, MicDiag, Reading, Screen, Verdict } from './types.ts'
+import type { ErrorAction, Platform } from './copy.ts'
+import type {
+  AppState,
+  ErrorCode,
+  HuntPanel,
+  HuntView,
+  LockMode,
+  MicDiag,
+  PausedFrom,
+  Reading,
+  Screen,
+  StationsView,
+  Verdict,
+} from './types.ts'
 import { createRadarPanel } from './radarUi.ts'
+import { createLogPanel } from './ui/logPanel.ts'
+import { createStationsPanel } from './ui/stationsPanel.ts'
+import { createStationScreen } from './ui/stationScreen.ts'
 
 /** Callbacks for every control. main.ts turns them into store events and side effects. */
 export interface UiHandlers {
@@ -39,8 +68,16 @@ export interface UiHandlers {
   onStopConfirm(): void
   onStopCancel(): void
   onConfirmLock(): void
+  /** The person touched the locked screen (pointer, key or focus): dispatch 'holdLock'. */
+  onHoldLock(): void
   onNotIt(): void
-  onRelisten(): void
+  /** Listening: lock onto the pending beep now instead of waiting for it to chirp again. */
+  onUseNow(): void
+  /**
+   * Hunting: listen again. The ui asks for confirmation itself once the hunt has
+   * cfg.stopConfirmMinReadings readings, so this call is always final.
+   */
+  onRelistenConfirm(): void
   onResetBest(): void
   onResume(): void
   onRetry(): void
@@ -49,9 +86,35 @@ export interface UiHandlers {
   onCopyLink(): void
   onToggleClicks(): void
   onToggleHaptics(): void
-  /** Open or close the direction scan (must run inside the click: iOS asks for compass access there). */
-  onScanToggle(): void
+  /**
+   * A hunting tab was chosen (click, or arrow keys on the tab row). Runs inside the event, so main
+   * can open the compass here when entering 'direction' (iOS only asks during a gesture) and close
+   * it when leaving.
+   */
+  onPanel(panel: HuntPanel): void
   onScanClear(): void
+
+  // Log panel (src/ui/logPanel.ts).
+  onLogNote(id: number, note: string): void
+  onCopyLog(): void
+
+  // Stations panel (src/ui/stationsPanel.ts).
+  onPairStart(): void
+  onPairStep(step: 'showOffer' | 'scanAnswer' | 'pasteAnswer'): void
+  onPairAnswer(code: string): void
+  onPairCancel(): void
+  onAddMic(deviceId: string): void
+  onRemoveListener(id: string): void
+  onCalibrate(): void
+  onCopyCode(code: string): void
+  onShareCode(code: string): void
+
+  // Station mode: the landing button and the station screen (src/ui/stationScreen.ts).
+  onStationMode(): void
+  onStationName(name: string): void
+  onStationStep(step: 'scanOffer' | 'pasteOffer'): void
+  onStationOffer(code: string): void
+  onStationStop(): void
 }
 
 // ---- Tiny DOM helpers ----------------------------------------------------------------------------
@@ -127,7 +190,7 @@ function finitePct(pct: number | null | undefined): number | null {
   return pct === null || pct === undefined || !Number.isFinite(pct) ? null : clamp(pct, 0, 100)
 }
 
-type ButtonVariant = 'primary' | 'secondary' | 'danger'
+type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'quiet'
 
 /** A real <button type="button">; primary buttons are 64 px tall, all others at least 48 px (style.css). */
 function button(label: string, onClick: () => void, variant: ButtonVariant = 'secondary'): HTMLButtonElement {
@@ -189,6 +252,24 @@ function lockIcon(): SVGSVGElement {
   )
 }
 
+/** Small station glyph (a phone with sound waves) for the landing's station button. */
+function stationIcon(): SVGSVGElement {
+  return s(
+    'svg',
+    { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    s('rect', { x: '7', y: '3', width: '10', height: '18', rx: '2.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }),
+    s('path', { d: 'M3.5 9a5 5 0 0 0 0 6M20.5 9a5 5 0 0 1 0 6', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round' }),
+  )
+}
+
+/** Where Soundwave runs, for instructions that depend on it (see PERMISSION_HELP). */
+function detectPlatform(): Platform {
+  const matches = (query: string): boolean => typeof matchMedia === 'function' && matchMedia(query).matches
+  if (matches('(display-mode: standalone)')) return 'standalone'
+  if (matches('(pointer: coarse)')) return 'touch'
+  return 'desktop'
+}
+
 // ---- Shared pieces -------------------------------------------------------------------------------
 
 interface Badge {
@@ -241,7 +322,7 @@ function errorCard(
     { class: 'card card-error' },
     h('span', { class: 'card-icon', 'aria-hidden': 'true' }, '!'),
     title,
-    h('p', { class: 'card-body' }, copy.body),
+    h('p', { class: 'card-body' }, errorBody(code, detectPlatform())),
     actions.length > 0 ? h('div', { class: 'card-actions' }, ...actions) : null,
   )
   return { el, title }
@@ -254,6 +335,8 @@ interface ScreenView {
   /** Receives focus when the screen appears after a user action. */
   readonly focus: HTMLElement
   update(state: AppState): void
+  /** Called once when the screen is replaced (stop cameras, timers, peer UI). */
+  dispose?(): void
 }
 
 function landingView(state: AppState, handlers: UiHandlers): ScreenView {
@@ -261,14 +344,22 @@ function landingView(state: AppState, handlers: UiHandlers): ScreenView {
   const title = heading(COPY.appName, 'screen-title brand-title')
   const caps = state.caps
   const supported = caps.secureContext && caps.getUserMedia && caps.audioContext
-  const cta = supported
-    ? h(
-        'div',
-        { class: 'cta' },
-        button(L.start, () => handlers.onStart(), 'primary'),
-        h('p', { class: 'caption' }, L.caption),
-      )
-    : h('div', { class: 'cta' }, errorCard('unsupported', handlers, 'h2', ['back']).el) // Back has nowhere to go here
+  let cta: HTMLElement
+  if (supported) {
+    const station = button(L.station, () => handlers.onStationMode(), 'secondary')
+    station.prepend(stationIcon())
+    station.classList.add('station-btn')
+    station.setAttribute('aria-describedby', 'station-hint')
+    cta = h(
+      'div',
+      { class: 'cta' },
+      button(L.start, () => handlers.onStart(), 'primary'),
+      h('p', { class: 'caption' }, L.caption),
+      h('div', { class: 'station-cta' }, station, h('p', { class: 'caption', id: 'station-hint' }, L.stationHint)),
+    )
+  } else {
+    cta = h('div', { class: 'cta' }, errorCard('unsupported', handlers, 'h2', ['back']).el) // Back has nowhere to go here
+  }
   const el = section(
     'landing',
     h('header', { class: 'brand' }, sonarMark(), title, h('p', { class: 'tagline' }, COPY.tagline)),
@@ -294,7 +385,7 @@ function landingView(state: AppState, handlers: UiHandlers): ScreenView {
 function requestingView(handlers: UiHandlers, cfg: Config): ScreenView {
   const R = COPY.requesting
   const title = heading(R.title)
-  const hint = h('p', { class: 'hint', hidden: true }, R.hint)
+  const hint = h('p', { class: 'hint', hidden: true }, PERMISSION_HELP[detectPlatform()].hint)
   const el = section(
     'requesting centered',
     h('div', { class: 'dots', 'aria-hidden': 'true' }, h('span'), h('span'), h('span')),
@@ -327,28 +418,56 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
   )
   const noBeep = h('p', { class: 'no-beep', hidden: true }, T.noBeep)
   const rawBadge = badge()
+
+  // A beep heard once, waiting for the confirming chirp. The sightings line ticks every second,
+  // so the card is not a live region; a separate polite node speaks the main line once.
+  const pendingMain = h('p', { class: 'pending-text' })
+  const pendingSeen = h('p', { class: 'pending-seen num' })
+  const pendingCard = h(
+    'div',
+    { class: 'pending', hidden: true },
+    h('span', { class: 'pending-dot', 'aria-hidden': 'true' }),
+    h('div', { class: 'pending-body' }, pendingMain, pendingSeen),
+    button(T.useNow, () => handlers.onUseNow(), 'secondary'),
+  )
+  const pendingLive = h('p', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' })
+
   const el = section(
     'listening',
     h(
       'div',
       { class: 'listening-main' },
+      // Two groups, one column on phones held upright; side by side on landscape phones, so the
+      // waiting-beep card and 'Use it now' stay on screen.
       h(
         'div',
-        { class: 'ring', 'aria-hidden': 'true' },
-        h('span', { class: 'ring-wave' }),
-        h('span', { class: 'ring-wave' }),
-        h('span', { class: 'ring-wave' }),
-        h('span', { class: 'ring-core' }),
+        { class: 'listening-status' },
+        h(
+          'div',
+          { class: 'ring', 'aria-hidden': 'true' },
+          h('span', { class: 'ring-wave' }),
+          h('span', { class: 'ring-wave' }),
+          h('span', { class: 'ring-wave' }),
+          h('span', { class: 'ring-core' }),
+        ),
+        title,
+        h('p', { class: 'elapsed' }, h('span', { class: 'sr-only' }, `${T.elapsedLabel} `), elapsed),
+        micRow,
       ),
-      title,
-      h('p', { class: 'elapsed' }, h('span', { class: 'sr-only' }, `${T.elapsedLabel} `), elapsed),
-      micRow,
-      h('p', { class: 'tip' }, T.tip),
-      h('div', { 'aria-live': 'polite' }, noBeep),
-      rawBadge.el,
+      h(
+        'div',
+        { class: 'listening-side' },
+        h('p', { class: 'tip' }, T.tip),
+        pendingCard,
+        pendingLive,
+        h('div', { 'aria-live': 'polite' }, noBeep),
+        rawBadge.el,
+      ),
     ),
     h('div', { class: 'bottombar' }, button(T.stop, () => handlers.onStopRequest(), 'secondary')),
   )
+
+  let pendingKey = ''
   return {
     el,
     focus: title,
@@ -358,7 +477,21 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
       const sinceMs = state.nowMs - screen.sinceMs
       setText(elapsed, formatClock(sinceMs / 1000))
       setVar(micRow, '--level', clamp(state.micLevel, 0, 1).toFixed(3))
-      setHidden(noBeep, sinceMs < cfg.noBeepHintMs)
+      const pending = state.pending
+      // A waiting beep can expire while 'Use it now' has focus: hand focus to the heading first.
+      if (pending === null && pendingCard.contains(document.activeElement)) title.focus()
+      setHidden(pendingCard, pending === null)
+      setHidden(noBeep, sinceMs < cfg.noBeepHintMs || pending !== null)
+      if (pending !== null) {
+        setText(pendingMain, pendingText(pending))
+        setText(pendingSeen, pendingSightingsText(pending.sightings, (state.nowMs - pending.heardAtMs) / 1000))
+      }
+      // Speak it when a beep first waits and when its frequency changes, not on every sighting.
+      const key = pending === null ? '' : formatHz(pending.f0Hz)
+      if (key !== pendingKey) {
+        pendingKey = key
+        announce(pendingLive, pending === null ? '' : pendingText(pending))
+      }
       syncBadge(rawBadge, state.mic)
     },
   }
@@ -369,32 +502,49 @@ function lockedView(handlers: UiHandlers, cfg: Config): ScreenView {
   const title = heading(K.banner, 'screen-title banner')
   const freq = h('p', { class: 'freq-big num' })
   const heard = h('p', { class: 'heard' })
-  const advance = h('div', { class: 'advance', 'aria-hidden': 'true' }, h('span', { class: 'advance-fill' }))
+  // The automatic advance is drawn inside Start hunting (--p) and explained by the caption.
+  const start = button(K.startHunting, () => handlers.onConfirmLock(), 'primary')
+  start.classList.add('btn-progress')
+  const auto = h('p', { class: 'caption auto-caption', id: 'locked-auto' }, K.auto)
   const el = section(
     'locked centered',
     h('span', { class: 'banner-dot', 'aria-hidden': 'true' }),
     title,
     freq,
     heard,
-    advance,
-    h(
-      'div',
-      { class: 'actions' },
-      button(K.startHunting, () => handlers.onConfirmLock(), 'primary'),
-      button(K.notIt, () => handlers.onNotIt(), 'secondary'),
-    ),
+    h('div', { class: 'actions' }, start, auto, button(K.notIt, () => handlers.onNotIt(), 'secondary')),
   )
+
+  // Any touch, key press or focus on a control holds the screen: whoever is reading or reaching
+  // for "Wrong sound?" gets all the time they need. Focus moved to the heading by the app itself
+  // does not count.
+  let asked = false
+  let held = false
+  const hold = (): void => {
+    if (held || asked) return
+    asked = true
+    handlers.onHoldLock()
+  }
+  el.addEventListener('pointerdown', hold)
+  el.addEventListener('keydown', hold)
+  el.addEventListener('focusin', (e) => {
+    if (e.target instanceof HTMLButtonElement) hold()
+  })
+
   return {
     el,
     focus: title,
     update(state) {
       const screen = state.screen
       if (screen.kind !== 'locked') return
+      held = screen.held === true
       const lock = state.lock
       setText(freq, formatHz(lock?.f0Hz ?? Number.NaN))
       setText(heard, lock ? heardText(lock) : '')
-      const p = clamp((state.nowMs - screen.sinceMs) / cfg.lockedBannerMs, 0, 1)
-      setVar(advance, '--p', p.toFixed(3))
+      setHidden(auto, held)
+      setAttr(start, 'aria-describedby', held ? null : 'locked-auto')
+      const p = held ? 0 : clamp((state.nowMs - screen.sinceMs) / cfg.lockedBannerMs, 0, 1)
+      setVar(start, '--p', p.toFixed(3))
     },
   }
 }
@@ -443,119 +593,264 @@ function heroModel(view: HuntView | null, mode: LockMode, cfg: Config): HeroMode
   }
 }
 
-const HEAT_STOPS: readonly (readonly [number, number, number])[] = ['#2F5BE0', '#3F9BE8', '#7FC4D8', '#F2C14E', '#FF8A1F'].map(
-  (hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)] as const,
-)
-
-/** Colour of the heat ramp (same stops as --heat-ramp in style.css) at 0..100. */
-function heatColor(pct: number): string {
-  const t = (clamp(pct, 0, 100) / 100) * (HEAT_STOPS.length - 1)
-  const i = Math.min(HEAT_STOPS.length - 2, Math.floor(t))
-  const f = t - i
-  const a = HEAT_STOPS[i]!
-  const b = HEAT_STOPS[i + 1]!
-  const mix = (k: 0 | 1 | 2): number => Math.round(a[k] + (b[k] - a[k]) * f)
-  return `rgb(${mix(0)} ${mix(1)} ${mix(2)})`
+/** The best reading's meter position (the 'Best' tick), or null before any reading has one. */
+function bestPct(readings: readonly Reading[]): number | null {
+  let best: number | null = null
+  for (const r of readings) {
+    const pct = finitePct(r.pct)
+    if (pct !== null && (best === null || pct > best)) best = pct
+  }
+  return best
 }
 
-/** Countdown kinds worth a polite announcement when they begin. */
-const ANNOUNCED_PHASES: ReadonlySet<string> = new Set(['hold', 'late', 'overdue', 'lost'])
+/** Other listeners (extra mics, stations) that are listening right now: the Stations tab badge. */
+function listeningCount(view: StationsView | null): number {
+  if (view === null) return 0
+  let n = 0
+  for (const l of view.listeners) if (l.kind !== 'self' && l.status === 'listening') n++
+  return n
+}
 
-function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): ScreenView {
+/** Countdown kinds worth a polite announcement when they begin (not 'late' / 'overdue': the chirp is due then). */
+const ANNOUNCED_PHASES: ReadonlySet<string> = new Set(['hold', 'lost'])
+/** Live mode speaks a verdict at most this often, and only once it held for two verdict updates. */
+const LIVE_ANNOUNCE_GAP_MS = 5_000
+const LIVE_ANNOUNCE_HOLD_UPDATES = 2
+
+/** ui-internal services the hunting screen needs from mountUi. */
+interface HuntingHooks {
+  /** Open the 'Listen again?' confirmation (ui-local, not in AppState). */
+  requestRelisten(): void
+}
+
+interface TabParts {
+  readonly tab: HTMLButtonElement
+  readonly badge: HTMLElement
+  readonly panel: HTMLElement
+}
+
+function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: HuntingHooks): ScreenView {
   const H = COPY.hunting
   const title = heading(H.title, 'screen-title sr-only')
 
-  // Top bar: frequency, mode, toggles.
+  // Top bar, one row: frequency, mode, Clicks, Vibrate.
   const freqValue = h('span', { class: 'num' })
   const modeValue = h('span')
   const modeChip = h('span', { class: 'chip chip-mode' }, h('span', { class: 'sr-only' }, `${H.modeLabel}: `), modeValue)
   const clicks = toggle(H.clicks, () => handlers.onToggleClicks())
   const haptics = state.caps.haptics ? toggle(H.haptics, () => handlers.onToggleHaptics()) : null
-  const direction = state.caps.compass ? toggle(H.direction, () => handlers.onScanToggle()) : null
   const topbar = h(
     'div',
     { class: 'topbar' },
     h('span', { class: 'chip chip-freq' }, h('span', { class: 'sr-only' }, `${H.frequencyLabel}: `), freqValue),
     modeChip,
     h('span', { class: 'topbar-spacer' }),
-    direction ? direction.el : null,
     clicks.el,
     haptics ? haptics.el : null,
   )
-  const radar = createRadarPanel({ onClear: () => handlers.onScanClear(), onDone: () => handlers.onScanToggle() })
-  radar.el.hidden = true
 
-  // Verdict hero: the word is the assertive live region; the sub-line carries the raw dB change.
-  const verdict = h('p', { class: 'verdict', 'aria-live': 'assertive', 'aria-atomic': 'true' })
+  // Verdict hero. The word itself is not a live region: chirp readings are spoken (with their
+  // number) by `readout`; live verdicts, which can change every second, by the throttled
+  // `liveReadout`, so speech does not keep competing with the microphone.
+  const verdict = h('p', { class: 'verdict' })
   const delta = h('span', { class: 'delta num' })
   const newBest = h('span', { class: 'newbest', hidden: true }, h('span', { 'aria-hidden': 'true' }, '★ '), H.newBest)
-  const hero = h('div', { class: 'hero', 'data-verdict': 'none' }, verdict, h('p', { class: 'subline' }, delta, newBest))
+  const subline = h('p', { class: 'subline' }, delta, newBest)
+  const hero = h('div', { class: 'hero', 'data-verdict': 'none' }, verdict, subline)
+  const readout = h('p', { class: 'sr-only', 'aria-live': 'assertive', 'aria-atomic': 'true' })
+  const liveReadout = h('p', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' })
 
-  // Heat meter: gradient track, a mask from pct to the end, ghost at the previous reading, MAX cap.
+  // Status bar: what to do now (move / hold still), with the 'Hearing it' dot.
+  const hearing = h('span', { class: 'hearing', hidden: true }, h('span', { class: 'hearing-dot', 'aria-hidden': 'true' }), H.hearing)
+  const statusText = h('span', { class: 'countdown-text' })
+  const statusBar = h('div', { class: 'countdown', 'data-kind': 'none' }, hearing, statusText)
+  const phaseLive = h('p', { class: 'sr-only', 'aria-live': 'polite' })
+
+  // ---- Meter panel: meter (with Start over here), history strip, guidance.
   const numeral = h('span', { class: 'numeral num', 'aria-hidden': 'true' })
+  const reset = button(H.resetBest, () => handlers.onResetBest(), 'quiet')
+  reset.classList.add('meter-reset')
+  const meterEmpty = h('p', { class: 'meter-empty' })
   const ghost = h('span', { class: 'meter-ghost', hidden: true })
+  const bestTick = h('span', { class: 'meter-best', hidden: true })
   const cap = h('span', { class: 'meter-cap', hidden: true }, h('span', { class: 'meter-cap-label' }, H.max))
   const meter = h(
     'div',
     { class: 'meter', role: 'meter', 'aria-label': H.meterLabel, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': 0 },
-    h('span', { class: 'meter-track' }, h('span', { class: 'meter-rest' }), cap, ghost),
+    h('span', { class: 'meter-track' }, h('span', { class: 'meter-rest' }), cap, ghost, bestTick),
   )
+  const scaleHot = h('span', { class: 'scale-hot' }, H.scaleHot)
+  const scaleBest = h('span', { class: 'scale-best', hidden: true }, '★ ', H.scaleBest)
   const meterBlock = h(
     'div',
     { class: 'meter-block' },
-    h('div', { class: 'meter-head' }, numeral, h('span', { class: 'numeral-unit', 'aria-hidden': 'true' }, H.ofHundred)),
+    h('div', { class: 'meter-head' }, numeral, reset),
+    meterEmpty,
     meter,
-    h('div', { class: 'meter-scale', 'aria-hidden': 'true' }, h('span', {}, H.scaleCold), h('span', {}, H.scaleHot)),
+    h('div', { class: 'meter-scale', 'aria-hidden': 'true' }, h('span', { class: 'scale-cold' }, H.scaleCold), scaleHot, scaleBest),
   )
 
-  // Countdown with the "hearing it" dot; phase changes are announced politely.
-  const hearing = h('span', { class: 'hearing', hidden: true }, h('span', { class: 'hearing-dot', 'aria-hidden': 'true' }), H.hearing)
-  const countdown = h('span', { class: 'countdown-text' })
-  const countdownRow = h('p', { class: 'countdown' }, hearing, countdown)
-  const phaseLive = h('span', { class: 'sr-only', 'aria-live': 'polite' })
-
-  // History strip: a fixed pool of historyShown items, oldest left. `shows` remembers the Reading
-  // object each item was last drawn from (hunt views reuse unchanged Reading objects).
-  const pool = Array.from({ length: Math.max(0, cfg.historyShown) }, () => {
+  // History strip: a fixed pool of historyShown slots filled from the right, so the newest reading
+  // always sits in the last slot and nothing reflows. `shows` remembers the Reading object each
+  // slot was last drawn from (hunt views reuse unchanged Reading objects).
+  const pool = Array.from({ length: Math.max(0, cfg.historyShown) }, (_, i) => {
     const vis = h('span', { 'aria-hidden': 'true' })
     const sr = h('span', { class: 'sr-only' })
-    return { li: h('li', { hidden: true }, vis, sr), vis, sr, shows: null as Reading | null, current: false }
+    const li = h('li', { hidden: true }, vis, sr)
+    li.style.gridColumn = String(i + 1)
+    return { li, vis, sr, shows: null as Reading | null, current: false }
   })
   const history = h('ol', { class: 'history', 'aria-label': H.history, hidden: true }, ...pool.map((p) => p.li))
-
+  setVar(history, '--slots', String(Math.max(1, pool.length)))
   const guidance = h('p', { class: 'guidance' })
   const rawBadge = badge()
+
+  // ---- Direction panel: the radar with its own Clear scan (no Done: leaving = another tab).
+  const radar = createRadarPanel({ onClear: () => handlers.onScanClear() })
+
+  // ---- Tabs and panels.
+  const order: readonly HuntPanel[] = state.caps.compass ? ['meter', 'direction', 'log', 'stations'] : ['meter', 'log', 'stations']
+  const tablist = h('div', { class: 'tabs', role: 'tablist', 'aria-label': H.tabsLabel })
+  const panelHost = h('div', { class: 'panels' })
+  const tabs = new Map<HuntPanel, TabParts>()
+  for (const p of order) {
+    const badgeEl = h('span', { class: 'tab-badge num', 'aria-hidden': 'true', hidden: true })
+    const tab = h(
+      'button',
+      {
+        type: 'button',
+        class: 'tab',
+        role: 'tab',
+        id: `tab-${p}`,
+        'aria-controls': `panel-${p}`,
+        'aria-selected': 'false',
+        'aria-label': tabName(p, 0),
+        tabindex: -1,
+      },
+      h('span', { class: 'tab-label', 'data-label': H.tabs[p] }, H.tabs[p]),
+      badgeEl,
+    )
+    tab.addEventListener('click', () => choose(p))
+    const panel = h('div', { class: `panel panel-${p}`, role: 'tabpanel', id: `panel-${p}`, 'aria-labelledby': `tab-${p}`, tabindex: 0, hidden: true })
+    tablist.append(tab)
+    panelHost.append(panel)
+    tabs.set(p, { tab, badge: badgeEl, panel })
+  }
+  tabs.get('meter')!.panel.append(meterBlock, history, guidance, rawBadge.el)
+  tabs.get('direction')?.panel.append(radar.el)
+
+  // Arrow keys move between tabs and select them (automatic activation); Home / End jump.
+  tablist.addEventListener('keydown', (e) => {
+    const i = order.findIndex((p) => tabs.get(p)!.tab === document.activeElement)
+    if (i < 0) return
+    let next = -1
+    if (e.key === 'ArrowRight') next = (i + 1) % order.length
+    else if (e.key === 'ArrowLeft') next = (i - 1 + order.length) % order.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = order.length - 1
+    if (next < 0) return
+    e.preventDefault()
+    const p = order[next]!
+    tabs.get(p)!.tab.focus()
+    choose(p)
+  })
+
+  // The Log and Stations panels are created the first time their tab opens.
+  let logPanel: ReturnType<typeof createLogPanel> | null = null
+  let stationsPanel: ReturnType<typeof createStationsPanel> | null = null
+
+  // Bottom bar in the thumb zone.
+  const relisten = button(H.relisten, () => {
+    const readings = current.hunt?.readings.length ?? 0
+    if (readings >= cfg.stopConfirmMinReadings) hooks.requestRelisten()
+    else handlers.onRelistenConfirm()
+  }, 'secondary')
+  const bottombar = h('div', { class: 'bottombar' }, relisten, button(H.stop, () => handlers.onStopRequest(), 'danger'))
 
   const el = section(
     'hunting',
     title,
     topbar,
     hero,
-    meterBlock,
-    radar.el,
-    h('div', { class: 'info' }, countdownRow, phaseLive, history, guidance, rawBadge.el),
-    h(
-      'div',
-      { class: 'bottombar' },
-      button(H.resetBest, () => handlers.onResetBest(), 'secondary'),
-      button(H.relisten, () => handlers.onRelisten(), 'secondary'),
-      button(H.stop, () => handlers.onStopRequest(), 'secondary'),
-    ),
+    readout,
+    liveReadout,
+    statusBar,
+    phaseLive,
+    tablist,
+    panelHost,
+    bottombar,
   )
 
-  let heroKey: string | null = null
-  let phase: string | null = null
+  let current = state
+  let shownPanel: HuntPanel | null = null
   let shownF0: number | null = null
   let meterKey = ''
+  let announcedKey: string | null = null
+  let phase: string | null = null
+  let liveVerdict: Verdict | null = null
+  let liveSinceMs = 0
+  let liveSpoken: Verdict | null = null
+  let liveSpokenAtMs = -Infinity
+  let bestFor: readonly Reading[] | null = null
+  let best: number | null = null
+  let stationsFor: StationsView | null | undefined
+  let stationsN = 0
+  let logN = -1
+
+  function choose(p: HuntPanel): void {
+    if (p !== current.panel) handlers.onPanel(p)
+  }
+
+  function showPanel(p: HuntPanel): void {
+    if (p === shownPanel) return
+    // A panel hidden under the focus (main switched the tab, e.g. the compass failed) would drop
+    // focus to <body>: hand it to the newly selected tab instead.
+    const old = shownPanel === null ? undefined : tabs.get(shownPanel)
+    const refocus = old !== undefined && old.panel.contains(document.activeElement)
+    shownPanel = p
+    for (const [q, parts] of tabs) {
+      const on = q === p
+      setAttr(parts.tab, 'aria-selected', on ? 'true' : 'false')
+      setAttr(parts.tab, 'tabindex', on ? '0' : '-1')
+      setHidden(parts.panel, !on)
+    }
+    if (p === 'log' && logPanel === null) {
+      logPanel = createLogPanel(handlers, cfg)
+      tabs.get('log')!.panel.append(logPanel.el)
+    }
+    if (p === 'stations' && stationsPanel === null) {
+      stationsPanel = createStationsPanel(handlers, cfg)
+      tabs.get('stations')!.panel.append(stationsPanel.el)
+    }
+    setAttr(el, 'data-panel', p)
+    if (refocus) tabs.get(p)?.tab.focus()
+  }
+
+  function setBadge(p: HuntPanel, n: number): void {
+    const parts = tabs.get(p)
+    if (parts === undefined) return
+    setHidden(parts.badge, n <= 0)
+    setText(parts.badge, n > 0 ? String(n) : '')
+    setAttr(parts.tab, 'aria-label', tabName(p, n))
+  }
 
   return {
     el,
     focus: title,
+    dispose() {
+      stationsPanel?.dispose()
+      stationsPanel = null
+    },
     update(state) {
+      current = state
       const view = state.hunt
       const lock = state.lock
       const mode: LockMode = view?.mode ?? lock?.mode ?? 'chirp'
+      const panel: HuntPanel = tabs.has(state.panel) ? state.panel : 'meter'
+      const scanning = panel === 'direction'
+      showPanel(panel)
 
+      // Top bar.
       const f0 = view?.f0Hz ?? lock?.f0Hz ?? Number.NaN
       if (!Object.is(f0, shownF0)) {
         shownF0 = f0
@@ -565,83 +860,146 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
       setAttr(modeChip, 'data-mode', mode)
       syncToggle(clicks, state.settings.clicks)
       if (haptics) syncToggle(haptics, state.settings.haptics)
-      const scanning = state.scan.open
-      if (direction) syncToggle(direction, scanning)
-      // While scanning, the radar replaces the meter, history and guidance; the verdict and the
-      // countdown stay (the next chirp is the next radar sample).
-      setHidden(radar.el, !scanning)
-      setHidden(meterBlock, scanning)
-      setHidden(guidance, scanning)
-      setAttr(el, 'data-scanning', scanning ? '' : null)
-      if (scanning) radar.render(state.scan, mode)
 
+      // Hero. While scanning, turning on the spot changes the level through body shadowing, so
+      // 'WARMER +8 dB' would mislead: show a muted SCANNING and no sub-line.
       const m = heroModel(view, mode, cfg)
-      if (m.key !== heroKey) {
-        heroKey = m.key
-        announce(verdict, heroLabel(view))
-        setAttr(hero, 'data-verdict', m.verdict ?? 'none')
-      }
+      setText(verdict, scanning ? H.scanning : heroLabel(view))
+      setAttr(hero, 'data-verdict', scanning ? 'scanning' : (m.verdict ?? 'none'))
+      setHidden(subline, scanning)
       setText(delta, m.sub)
       setHidden(delta, m.sub === '')
       setHidden(newBest, !m.newBest)
 
-      // The meter changes once per reading (or per held-level change in live mode): skip the
-      // string and colour work on the ~60 frames per second where nothing moved.
-      const key = `${m.pct}|${m.prevPct}|${m.clipped}`
+      // Spoken verdicts: every chirp reading (with its number), or a settled live verdict at most
+      // every few seconds. Nothing while scanning; the radar panel speaks for itself then.
+      if (mode === 'chirp') {
+        if (m.key !== announcedKey) {
+          announcedKey = m.key
+          const last = view?.last ?? null
+          if (!scanning && last !== null) announce(readout, readingAnnouncement(last))
+        }
+        liveVerdict = null
+        liveSpoken = null
+      } else {
+        announcedKey = null
+        const v = view?.live?.verdict ?? null
+        if (v !== liveVerdict) {
+          liveVerdict = v
+          liveSinceMs = state.nowMs
+        }
+        if (
+          v !== null &&
+          v !== liveSpoken &&
+          !scanning &&
+          state.nowMs - liveSinceMs >= LIVE_ANNOUNCE_HOLD_UPDATES * cfg.liveVerdictMs &&
+          state.nowMs - liveSpokenAtMs >= LIVE_ANNOUNCE_GAP_MS
+        ) {
+          liveSpoken = v
+          liveSpokenAtMs = state.nowMs
+          announce(liveReadout, liveAnnouncement(v))
+        }
+      }
+
+      // Status bar. Chirp mode: the countdown. Live mode: whether the tone is heard at all.
+      const isHearing = view?.hearing ?? false
+      let text: string
+      let kind: string
+      if (mode === 'live') {
+        text = isHearing ? '' : H.notHearing
+        kind = isHearing ? 'hearing' : 'quiet'
+      } else {
+        const cd = view?.countdown ?? null
+        text = countdownText(cd)
+        kind = cd?.kind ?? 'none'
+      }
+      // While a chirp sounds outside the hold window, 'Hearing it' alone is the news: the long
+      // 'move now' line next to it would wrap to a third line and make the bar jump.
+      const hearingOnly = mode === 'chirp' && isHearing && kind !== 'hold' && kind !== 'late'
+      setText(statusText, text)
+      setHidden(statusText, text === '' || hearingOnly)
+      setHidden(hearing, !isHearing)
+      setAttr(statusBar, 'data-kind', kind)
+      if (kind !== phase) {
+        phase = kind
+        setText(phaseLive, ANNOUNCED_PHASES.has(kind) ? text : '')
+      }
+      // The visible line is skipped by screen readers while the live region says the same.
+      setAttr(statusText, 'aria-hidden', text !== '' && phaseLive.textContent === text ? 'true' : null)
+
+      // Meter. It changes once per reading (or per held-level change in live mode): skip the
+      // string work on the ~60 frames per second where nothing moved.
+      const readings = view?.readings ?? []
+      if (readings !== bestFor) {
+        bestFor = readings
+        best = bestPct(readings)
+      }
+      const bestShown = mode === 'chirp' ? best : null
+      const key = `${m.pct}|${m.prevPct}|${m.clipped}|${bestShown}|${mode}`
       if (key !== meterKey) {
         meterKey = key
         const pct = m.pct ?? 0
         setVar(meterBlock, '--pct', pct.toFixed(1))
-        setVar(meterBlock, '--heat', heatColor(pct))
+        // 'Start over here' empties the meter, which hides its own row: keep keyboard focus on the
+        // Meter tab instead of letting it fall to <body>.
+        if (m.pct === null && document.activeElement === reset) tabs.get('meter')?.tab.focus()
         setAttr(meterBlock, 'data-empty', m.pct === null ? '' : null)
+        setText(meterEmpty, mode === 'live' ? H.meterWarmup : H.meterEmpty)
         setText(numeral, formatPct(m.pct))
         setAttr(meter, 'aria-valuenow', String(Math.round(pct)))
         setAttr(meter, 'aria-valuetext', meterValueText(m.pct, m.prevPct, m.clipped))
         setHidden(ghost, m.prevPct === null)
         if (m.prevPct !== null) setVar(meterBlock, '--ghost', m.prevPct.toFixed(1))
+        setHidden(bestTick, bestShown === null)
+        setHidden(scaleBest, bestShown === null)
+        setHidden(scaleHot, bestShown !== null)
+        if (bestShown !== null) setVar(meterBlock, '--best', bestShown.toFixed(1))
         setHidden(cap, !m.clipped)
       }
+      setAttr(meterBlock, 'data-stale', mode === 'live' && !isHearing ? '' : null)
 
-      const cd = mode === 'live' ? null : (view?.countdown ?? null)
-      const cdText = countdownText(cd)
-      const isHearing = view?.hearing ?? false
-      setText(countdown, cdText)
-      setAttr(countdownRow, 'data-kind', cd?.kind ?? 'none')
-      setHidden(countdown, cdText === '')
-      setHidden(hearing, !isHearing)
-      setHidden(countdownRow, cdText === '' && !isHearing)
-      const kind = cd?.kind ?? 'none'
-      if (kind !== phase) {
-        phase = kind
-        setText(phaseLive, ANNOUNCED_PHASES.has(kind) ? cdText : '')
-      }
-
-      const readings = view?.readings ?? []
-      const start = Math.max(0, readings.length - pool.length)
-      const shown = readings.length - start
+      // History, newest in the last slot.
+      const shown = Math.min(pool.length, readings.length)
+      const firstSlot = pool.length - shown
       for (let i = 0; i < pool.length; i++) {
         const item = pool[i]!
-        const r = i < shown ? (readings[start + i] ?? null) : null
-        const current = i === shown - 1
-        if (r === item.shows && current === item.current) continue // same Reading object: nothing to redraw
+        const r = i >= firstSlot ? (readings[readings.length - pool.length + i] ?? null) : null
+        const isCurrent = r !== null && i === pool.length - 1
+        if (r === item.shows && isCurrent === item.current) continue // same Reading object: nothing to redraw
         item.shows = r
-        item.current = current
+        item.current = isCurrent
         setHidden(item.li, r === null)
         if (r === null) continue
         setText(item.vis, historyItemText(r))
         setText(item.sr, historyItemLabel(r))
         setAttr(item.li, 'data-verdict', r.isNewBest ? 'best' : r.verdict)
-        setAttr(item.li, 'aria-current', current ? 'true' : null)
+        setAttr(item.li, 'aria-current', isCurrent ? 'true' : null)
       }
-      setHidden(history, shown === 0 || scanning)
+      setHidden(history, shown < 2)
 
       setText(guidance, view ? guidanceText(view) : GUIDANCE.default)
       syncBadge(rawBadge, state.mic)
+
+      // Tab badges: readings in the log, other listeners that are listening.
+      if (state.log.length !== logN) {
+        logN = state.log.length
+        setBadge('log', logN)
+      }
+      if (state.stations !== stationsFor) {
+        stationsFor = state.stations
+        stationsN = listeningCount(state.stations)
+        setBadge('stations', stationsN)
+      }
+
+      // Only the open panel renders.
+      if (panel === 'direction') radar.render(state.scan, mode)
+      else if (panel === 'log') logPanel?.render(state)
+      else if (panel === 'stations') stationsPanel?.render(state)
     },
   }
 }
 
-function pausedView(needsGesture: boolean, handlers: UiHandlers): ScreenView {
+function pausedView(from: PausedFrom, needsGesture: boolean, handlers: UiHandlers): ScreenView {
   const P = COPY.paused
   const title = heading(P.title)
   const resume = needsGesture ? button(P.resume, () => handlers.onResume(), 'primary') : null
@@ -649,9 +1007,10 @@ function pausedView(needsGesture: boolean, handlers: UiHandlers): ScreenView {
     'paused centered',
     h('div', { class: 'pause-icon', 'aria-hidden': 'true' }, h('span'), h('span')),
     title,
+    h('p', { class: 'muted pause-body' }, from === 'hunting' ? `${P.body} ${P.kept}` : P.body),
     resume ?? h('p', { class: 'muted', role: 'status' }, P.resuming),
     // A way out when resuming keeps failing (e.g. the microphone stays taken by a phone call).
-    h('div', { class: 'actions' }, button(P.stop, () => handlers.onStopRequest(), 'secondary')),
+    h('div', { class: 'actions' }, button(P.stop, () => handlers.onStopRequest(), 'danger')),
   )
   return { el, focus: resume ?? title, update() {} }
 }
@@ -661,11 +1020,21 @@ function errorView(code: ErrorCode, handlers: UiHandlers): ScreenView {
   return { el: section('error centered', card.el), focus: card.title, update() {} }
 }
 
+function stationView(handlers: UiHandlers, cfg: Config): ScreenView {
+  const station = createStationScreen(handlers, cfg)
+  return {
+    el: station.el,
+    focus: station.focus,
+    update: (state) => station.update(state),
+    dispose: () => station.dispose(),
+  }
+}
+
 /** Identity of the screen DOM: rebuilt only when this changes. */
 function screenKey(screen: Screen): string {
   switch (screen.kind) {
     case 'paused':
-      return `paused:${screen.needsGesture ? 'gesture' : 'auto'}`
+      return `paused:${screen.from}:${screen.needsGesture ? 'gesture' : 'auto'}`
     case 'error':
       return `error:${screen.code}`
     default:
@@ -673,7 +1042,7 @@ function screenKey(screen: Screen): string {
   }
 }
 
-function buildView(state: AppState, handlers: UiHandlers, cfg: Config): ScreenView {
+function buildView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: HuntingHooks): ScreenView {
   const screen = state.screen
   switch (screen.kind) {
     case 'idle':
@@ -685,54 +1054,67 @@ function buildView(state: AppState, handlers: UiHandlers, cfg: Config): ScreenVi
     case 'locked':
       return lockedView(handlers, cfg)
     case 'hunting':
-      return huntingView(state, handlers, cfg)
+      return huntingView(state, handlers, cfg, hooks)
     case 'paused':
-      return pausedView(screen.needsGesture, handlers)
+      return pausedView(screen.from, screen.needsGesture, handlers)
     case 'error':
       return errorView(screen.code, handlers)
+    case 'station':
+      return stationView(handlers, cfg)
   }
 }
 
-// ---- Stop confirmation dialog --------------------------------------------------------------------
+// ---- Confirmation dialog (Stop, Listen again) ----------------------------------------------------
 
 interface Dialog {
   readonly el: HTMLElement
   readonly focus: HTMLElement
 }
 
-/** Modal alertdialog; Escape or a tap on the backdrop keeps going, Tab cycles between the two buttons. */
-function stopDialog(handlers: UiHandlers): Dialog {
-  const C = COPY.stopConfirm
-  const stop = button(C.stop, () => handlers.onStopConfirm(), 'danger')
-  const keep = button(C.keepGoing, () => handlers.onStopCancel(), 'primary')
+interface DialogSpec {
+  readonly title: string
+  /** The destructive action (danger style). */
+  readonly confirm: string
+  /** The safe action (primary, under the thumb, focused first). */
+  readonly cancel: string
+  onConfirm(): void
+  onCancel(): void
+}
+
+type DialogKind = 'stop' | 'relisten'
+
+/** Modal alertdialog; Escape or a tap on the backdrop cancels, Tab cycles between the two buttons. */
+function confirmDialog(spec: DialogSpec): Dialog {
+  const confirm = button(spec.confirm, () => spec.onConfirm(), 'danger')
+  const cancel = button(spec.cancel, () => spec.onCancel(), 'primary')
   // tabindex -1: a click on the dialog's text focuses the dialog instead of <body>, so Escape and
   // Tab still reach the scrim's key handler.
   const dialog = h(
     'div',
-    { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'stop-title', tabindex: -1 },
-    h('h2', { class: 'dialog-title', id: 'stop-title' }, C.title),
-    h('div', { class: 'dialog-actions' }, stop, keep),
+    { class: 'dialog', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'dialog-title', tabindex: -1 },
+    h('h2', { class: 'dialog-title', id: 'dialog-title' }, spec.title),
+    h('div', { class: 'dialog-actions' }, confirm, cancel),
   )
   const scrim = h('div', { class: 'scrim' }, dialog)
   scrim.addEventListener('click', (e) => {
-    if (e.target === scrim) handlers.onStopCancel()
+    if (e.target === scrim) spec.onCancel()
   })
   scrim.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.preventDefault()
-      handlers.onStopCancel()
+      spec.onCancel()
     } else if (e.key === 'Tab') {
       const active = document.activeElement
-      if (e.shiftKey && active === stop) {
+      if (e.shiftKey && active === confirm) {
         e.preventDefault()
-        keep.focus()
-      } else if (!e.shiftKey && active === keep) {
+        cancel.focus()
+      } else if (!e.shiftKey && active === cancel) {
         e.preventDefault()
-        stop.focus()
+        confirm.focus()
       }
     }
   })
-  return { el: scrim, focus: keep }
+  return { el: scrim, focus: cancel }
 }
 
 // ---- Mount ---------------------------------------------------------------------------------------
@@ -741,13 +1123,17 @@ function stopDialog(handlers: UiHandlers): Dialog {
  * Take over `root` (the <main id="app">) and return the renderer. render(state) is idempotent and
  * cheap when nothing changed; focus moves to a new screen's heading (or its main action) only when
  * focus was inside the app, so page load and background updates never steal it.
+ *
+ * Two bits of state live here rather than in AppState: the 'Listen again?' confirmation (the
+ * Listen again button opens it once the hunt has cfg.stopConfirmMinReadings readings; its confirm
+ * calls handlers.onRelistenConfirm) and a toast the person tapped away.
  */
 export function mountUi(root: HTMLElement, handlers: UiHandlers, cfg: Config): { render(state: AppState): void } {
   const screenHost = h('div', { class: 'screen-host' })
   const debugPre = h('pre', { class: 'debug-text' })
   const debugPanel = h('section', { class: 'debug', 'aria-label': COPY.debug.title, hidden: true }, h('h2', {}, COPY.debug.title), debugPre)
-  const toastText = h('p', { class: 'toast', hidden: true })
-  const toastRegion = h('div', { class: 'toast-region', role: 'status', 'aria-live': 'polite' }, toastText)
+  const toastEl = h('button', { type: 'button', class: 'toast', hidden: true })
+  const toastRegion = h('div', { class: 'toast-region', role: 'status', 'aria-live': 'polite' }, toastEl)
   const dialogHost = h('div', { class: 'dialog-host' })
   root.classList.add('app')
   root.replaceChildren(screenHost, debugPanel, toastRegion, dialogHost)
@@ -755,11 +1141,55 @@ export function mountUi(root: HTMLElement, handlers: UiHandlers, cfg: Config): {
   let view: ScreenView | null = null
   let viewKey = ''
   let dialog: Dialog | null = null
+  let dialogKind: DialogKind | null = null
   let focusBeforeDialog: HTMLElement | null = null
   let last: AppState | null = null
+  let relistenOpen = false
+  let toastKey = ''
+  let dismissedToast = ''
+
+  const hooks: HuntingHooks = {
+    requestRelisten() {
+      relistenOpen = true
+      if (last !== null) paint(last)
+    },
+  }
+
+  function closeRelisten(): void {
+    relistenOpen = false
+    if (last !== null) paint(last)
+  }
+
+  const stopSpec: DialogSpec = {
+    title: COPY.stopConfirm.title,
+    confirm: COPY.stopConfirm.stop,
+    cancel: COPY.stopConfirm.keepGoing,
+    onConfirm: () => handlers.onStopConfirm(),
+    onCancel: () => handlers.onStopCancel(),
+  }
+  const relistenSpec: DialogSpec = {
+    title: COPY.relistenConfirm.title,
+    confirm: COPY.relistenConfirm.confirm,
+    cancel: COPY.relistenConfirm.keepGoing,
+    onConfirm: () => {
+      relistenOpen = false
+      handlers.onRelistenConfirm()
+      if (last !== null) paint(last) // closes the dialog even if main changed nothing
+    },
+    onCancel: closeRelisten,
+  }
+
+  toastEl.addEventListener('click', () => {
+    dismissedToast = toastKey
+    setHidden(toastEl, true)
+  })
 
   function render(state: AppState): void {
     if (state === last) return
+    paint(state)
+  }
+
+  function paint(state: AppState): void {
     const firstRender = last === null
     last = state
 
@@ -770,7 +1200,8 @@ export function mountUi(root: HTMLElement, handlers: UiHandlers, cfg: Config): {
     const key = screenKey(state.screen)
     let rebuilt = false
     if (view === null || key !== viewKey) {
-      view = buildView(state, handlers, cfg)
+      view?.dispose?.()
+      view = buildView(state, handlers, cfg, hooks)
       viewKey = key
       screenHost.replaceChildren(view.el)
       root.setAttribute('data-screen', state.screen.kind)
@@ -778,21 +1209,27 @@ export function mountUi(root: HTMLElement, handlers: UiHandlers, cfg: Config): {
     }
     view.update(state)
 
-    // Stop-confirm layer.
+    // Dialog layer: the stop confirmation (AppState) wins over the ui-local Listen again one,
+    // which only lives on the hunting screen.
+    if (state.screen.kind !== 'hunting') relistenOpen = false
+    const want: DialogKind | null = state.confirmStop ? 'stop' : relistenOpen ? 'relisten' : null
     let dialogClosed = false
-    if (state.confirmStop && dialog === null) {
-      focusBeforeDialog = active instanceof HTMLElement && root.contains(active) ? active : null
-      dialog = stopDialog(handlers)
-      dialogHost.replaceChildren(dialog.el)
-      screenHost.inert = true
-      debugPanel.inert = true
-      dialog.focus.focus()
-    } else if (!state.confirmStop && dialog !== null) {
-      dialog = null
-      dialogHost.replaceChildren()
-      screenHost.inert = false
-      debugPanel.inert = false
-      dialogClosed = true
+    if (want !== dialogKind) {
+      if (dialogKind === null) focusBeforeDialog = active instanceof HTMLElement && root.contains(active) ? active : null
+      if (want === null) {
+        dialog = null
+        dialogHost.replaceChildren()
+        screenHost.inert = false
+        debugPanel.inert = false
+        dialogClosed = true
+      } else {
+        dialog = confirmDialog(want === 'stop' ? stopSpec : relistenSpec)
+        dialogHost.replaceChildren(dialog.el)
+        screenHost.inert = true
+        debugPanel.inert = true
+        dialog.focus.focus()
+      }
+      dialogKind = want
     }
 
     if (dialog === null && focusInApp && !firstRender) {
@@ -803,10 +1240,12 @@ export function mountUi(root: HTMLElement, handlers: UiHandlers, cfg: Config): {
     }
     if (dialogClosed) focusBeforeDialog = null
 
-    // Toast layer (expired toasts hide even before the reducer clears them on the next tick).
-    const toast = state.toast !== null && state.toast.untilMs > state.nowMs ? state.toast.text : ''
-    setText(toastText, toast)
-    setHidden(toastText, toast === '')
+    // Toast layer (expired toasts hide even before the reducer clears them on the next tick; a
+    // tapped toast stays hidden until another one arrives).
+    const toast = state.toast !== null && state.toast.untilMs > state.nowMs ? state.toast : null
+    toastKey = toast === null ? '' : `${toast.untilMs}|${toast.text}`
+    setText(toastEl, toast?.text ?? '')
+    setHidden(toastEl, toast === null || toastKey === dismissedToast)
 
     // Debug layer.
     setHidden(debugPanel, !state.debug)

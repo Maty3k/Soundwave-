@@ -1,20 +1,58 @@
 /**
  * Direction-scan panel: a 360-degree radar drawn from the phone's point of view ("up" is where
  * the phone points right now), the loudest-direction arrow, where to face next, and plain-language
- * status. Static SVG elements are created once and patched on every render.
+ * status. Static SVG elements are created once; render() runs every frame while the Direction tab
+ * is open, so it writes to the DOM only what changed.
+ *
+ * Layout (compact, so the answer is visible without scrolling while the phone is held flat):
+ * status line and a quiet Clear scan button first, then the how-to (only until the first sample),
+ * the radar and the detail line. There is no Done button: choosing another tab leaves the scan.
+ *
+ * Steadiness: near an octant boundary the eight-way answer ('ahead to the left' / 'straight
+ * ahead') would flip several times per second as the hand wobbles, so the named octant only
+ * changes once the bearing is more than OCTANT_HOLD_DEG from its centre. Screen readers hear the
+ * status through a separate polite region that is written only when the status text, the quality
+ * or the number of measured directions changes.
  */
 import type { LockMode, RadarView, ScanState } from './types.ts'
-import { angleDiff, direction8, relativeBearing } from './dsp/radar.ts'
-import { RADAR_COPY, radarStatusText, radarDirectionText } from './copy.ts'
+import { angleDiff, direction8, relativeBearing, type Direction8 } from './dsp/radar.ts'
+import { measuredSectors, RADAR_COPY, radarDirectionText, radarStatusText } from './copy.ts'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const R = 100
-/** Heat ramp shared with the meter (lightness-monotonic, colour-blind safe). */
-const RAMP = ['#2F5BE0', '#3F9BE8', '#7FC4D8', '#F2C14E', '#FF8A1F'] as const
+/**
+ * Sector colours, quietest to loudest: the meter's heat ramp without its darkest blue, so the
+ * quietest measured sector (about 3.9:1 at fill-opacity 0.75) stays distinct from the unmeasured
+ * (outlined) ones. Lightness-monotonic and colour-blind safe.
+ */
+const RAMP = ['#3F9BE8', '#7FC4D8', '#F2C14E', '#FF8A1F'] as const
+
+/** The named octant changes only when the bearing is more than this far from its centre (45 / 2 + 10). */
+export const OCTANT_HOLD_DEG = 32.5
+
+const OCTANT_CENTER_DEG: Record<Direction8, number> = {
+  ahead: 0,
+  aheadRight: 45,
+  right: 90,
+  behindRight: 135,
+  behind: 180,
+  behindLeft: -135,
+  left: -90,
+  aheadLeft: -45,
+}
+
+/**
+ * Eight-way direction for a relative bearing (degrees, + = right) with hysteresis: keep `prev`
+ * while the bearing stays within OCTANT_HOLD_DEG of its centre, otherwise take the nearest octant.
+ */
+export function steadyOctant(prev: Direction8 | null, relDeg: number): Direction8 {
+  if (prev !== null && Math.abs(angleDiff(relDeg, OCTANT_CENTER_DEG[prev])) <= OCTANT_HOLD_DEG) return prev
+  return direction8(relDeg)
+}
 
 export interface RadarPanelHandlers {
+  /** Forget the measured directions and start the scan over. */
   onClear(): void
-  onDone(): void
 }
 
 export interface RadarPanel {
@@ -51,13 +89,19 @@ function rampColour(t: number): string {
   return `rgb(${mix(1)} ${mix(3)} ${mix(5)})`
 }
 
-function button(label: string, onClick: () => void, cls: string): HTMLButtonElement {
-  const b = document.createElement('button')
-  b.type = 'button'
-  b.className = cls
-  b.textContent = label
-  b.addEventListener('click', onClick)
-  return b
+function setAttr(el: Element, name: string, value: string | null): void {
+  if (el.getAttribute(name) === value) return
+  if (value === null) el.removeAttribute(name)
+  else el.setAttribute(name, value)
+}
+
+function setText(el: Element, text: string): void {
+  if (el.textContent !== text) el.textContent = text
+}
+
+function setShown(el: SVGElement, shown: boolean): void {
+  const value = shown ? '' : 'none'
+  if (el.style.display !== value) el.style.display = value
 }
 
 export function createRadarPanel(handlers: RadarPanelHandlers): RadarPanel {
@@ -65,10 +109,23 @@ export function createRadarPanel(handlers: RadarPanelHandlers): RadarPanel {
   el.className = 'scan'
   el.setAttribute('aria-labelledby', 'scan-title')
 
+  // Header: the (visually hidden) title, the answer, and a quiet Clear scan.
   const title = document.createElement('h2')
   title.id = 'scan-title'
-  title.className = 'scan__title'
+  title.className = 'scan__title sr-only'
   title.textContent = RADAR_COPY.title
+  const status = document.createElement('p')
+  status.className = 'scan__status'
+  const clear = document.createElement('button')
+  clear.type = 'button'
+  clear.className = 'btn btn-quiet scan__clear'
+  clear.textContent = RADAR_COPY.clear
+  clear.addEventListener('click', () => {
+    if (clear.getAttribute('aria-disabled') !== 'true') handlers.onClear()
+  })
+  const head = document.createElement('div')
+  head.className = 'scan__head'
+  head.append(title, status, clear)
 
   const how = document.createElement('p')
   how.className = 'scan__how'
@@ -76,10 +133,12 @@ export function createRadarPanel(handlers: RadarPanelHandlers): RadarPanel {
   const figure = svg('svg', { viewBox: '-120 -128 240 248', class: 'scan__radar', role: 'img' })
   const rings = svg('g', { class: 'scan__rings' })
   for (const f of [1 / 3, 2 / 3, 1]) rings.append(svg('circle', { cx: 0, cy: 0, r: (R * f).toFixed(1) }))
+  // Everything tied to compass headings lives in one group rotated by -heading, so turning the
+  // phone rewrites one transform instead of every wedge.
+  const world = svg('g', { class: 'scan__world' })
   const sectorLayer = svg('g', { class: 'scan__sectors' })
   const suggest = svg('g', { class: 'scan__suggest' })
-  const suggestLine = svg('line', { x1: 0, y1: 0, x2: 0, y2: -R })
-  suggest.append(suggestLine)
+  suggest.append(svg('line', { x1: 0, y1: 0, x2: 0, y2: -R }))
   const arrow = svg('g', { class: 'scan__arrow' })
   // White arrow with a dark halo: readable on every sector colour, including the orange loudest one.
   arrow.append(
@@ -87,48 +146,56 @@ export function createRadarPanel(handlers: RadarPanelHandlers): RadarPanel {
     svg('line', { x1: 0, y1: 0, x2: 0, y2: -(R * 0.82), class: 'scan__arrow-shaft' }),
     svg('path', { d: `M0 ${-R} L-10 ${-R + 20} L10 ${-R + 20} Z`, class: 'scan__arrow-head' }),
   )
+  world.append(sectorLayer, suggest, arrow)
   const forward = svg('g', { class: 'scan__forward' })
   forward.append(svg('path', { d: `M0 ${-R - 16} L-6 ${-R - 6} L6 ${-R - 6} Z` }))
   const you = svg('circle', { cx: 0, cy: 0, r: 5, class: 'scan__you' })
-  figure.append(rings, sectorLayer, suggest, arrow, forward, you)
+  figure.append(rings, world, forward, you)
 
-  const status = document.createElement('p')
-  status.className = 'scan__status'
-  status.setAttribute('aria-live', 'polite')
   const detail = document.createElement('p')
   detail.className = 'scan__detail'
 
-  const actions = document.createElement('div')
-  actions.className = 'scan__actions'
-  actions.append(button(RADAR_COPY.clear, handlers.onClear, 'btn btn-secondary'), button(RADAR_COPY.done, handlers.onDone, 'btn btn-primary'))
+  // Polite announcer, written only on meaningful changes (the visible status is not a live region).
+  const announcer = document.createElement('p')
+  announcer.className = 'sr-only'
+  announcer.setAttribute('aria-live', 'polite')
+  announcer.setAttribute('aria-atomic', 'true')
 
-  el.append(title, how, figure, status, detail, actions)
+  el.append(head, how, figure, detail, announcer)
 
   let sectorEls: SVGPathElement[] = []
-  let sectorCount = 0
-  let lastStatus = ''
+  let sectorKey = ''
+  let octant: Direction8 | null = null
+  let announceKey = ''
 
-  function ensureSectors(n: number): void {
-    if (n === sectorCount) return
+  /** (Re)build the wedges when the sector layout changes (chirp and live modes differ). */
+  function ensureSectors(radar: RadarView | null): void {
+    const key = radar === null ? '' : radar.sectors.map((s) => s.centerDeg.toFixed(1)).join(',')
+    if (key === sectorKey) return
+    sectorKey = key
     sectorLayer.replaceChildren()
     sectorEls = []
-    for (let i = 0; i < n; i++) {
-      const p = svg('path', { d: '' })
+    if (radar === null) return
+    const width = 360 / radar.sectors.length
+    for (const s of radar.sectors) {
+      // Drawn 1 degree narrower than the sector so neighbours stay visually separate.
+      const p = svg('path', { d: wedgePath(s.centerDeg, width - 1, R) })
       sectorLayer.append(p)
       sectorEls.push(p)
     }
-    sectorCount = n
   }
 
   function render(scan: ScanState, huntMode: LockMode): void {
     const radar: RadarView | null = scan.radar
-    how.textContent = huntMode === 'chirp' ? RADAR_COPY.howChirp : RADAR_COPY.howLive
-    const heading = radar?.headingDeg ?? 0
+    setText(how, huntMode === 'chirp' ? RADAR_COPY.howChirp : RADAR_COPY.howLive)
+    const samples = radar?.samples ?? 0
+    if (how.hidden !== samples > 0) how.hidden = samples > 0
 
-    if (radar) {
-      const n = radar.sectors.length
-      ensureSectors(n)
-      const width = 360 / n
+    ensureSectors(radar)
+    const heading = radar?.headingDeg ?? 0
+    setAttr(world, 'transform', `rotate(${(-heading).toFixed(1)})`)
+
+    if (radar !== null) {
       let min = Infinity
       let max = -Infinity
       for (const s of radar.sectors) {
@@ -137,46 +204,46 @@ export function createRadarPanel(handlers: RadarPanelHandlers): RadarPanel {
         max = Math.max(max, s.levelDb)
       }
       radar.sectors.forEach((s, i) => {
-        const p = sectorEls[i]!
-        // Draw 1 degree narrower than the sector so neighbours stay visually separate.
-        p.setAttribute('d', wedgePath(angleDiff(s.centerDeg, heading), width - 1, R))
+        const p = sectorEls[i]
+        if (p === undefined) return
         if (s.levelDb === null) {
-          p.setAttribute('class', 'scan__sector scan__sector--empty')
-          p.removeAttribute('fill')
-          p.removeAttribute('fill-opacity')
+          setAttr(p, 'class', 'scan__sector scan__sector--empty')
+          setAttr(p, 'fill', null)
+          setAttr(p, 'fill-opacity', null)
         } else {
           const t = max > min ? (s.levelDb - min) / (max - min) : 0.5
-          p.setAttribute('class', 'scan__sector')
-          p.setAttribute('fill', rampColour(t))
-          p.setAttribute('fill-opacity', (0.35 + 0.65 * t).toFixed(2))
+          setAttr(p, 'class', 'scan__sector')
+          setAttr(p, 'fill', rampColour(t))
+          setAttr(p, 'fill-opacity', (0.75 + 0.25 * t).toFixed(2))
         }
       })
-      if (radar.bearingDeg !== null) {
-        arrow.setAttribute('transform', `rotate(${angleDiff(radar.bearingDeg, heading).toFixed(1)})`)
-        arrow.style.display = ''
-      } else arrow.style.display = 'none'
-      if (radar.suggestDeg !== null && radar.quality !== 'clear') {
-        suggest.setAttribute('transform', `rotate(${angleDiff(radar.suggestDeg, heading).toFixed(1)})`)
-        suggest.style.display = ''
-      } else suggest.style.display = 'none'
+      setShown(arrow, radar.bearingDeg !== null)
+      if (radar.bearingDeg !== null) setAttr(arrow, 'transform', `rotate(${radar.bearingDeg.toFixed(1)})`)
+      const showSuggest = radar.suggestDeg !== null && radar.quality !== 'clear'
+      setShown(suggest, showSuggest)
+      if (showSuggest && radar.suggestDeg !== null) setAttr(suggest, 'transform', `rotate(${radar.suggestDeg.toFixed(1)})`)
     } else {
-      ensureSectors(0)
-      arrow.style.display = 'none'
-      suggest.style.display = 'none'
+      setShown(arrow, false)
+      setShown(suggest, false)
     }
 
-    const statusText = radarStatusText(scan, huntMode)
-    if (statusText !== lastStatus) {
-      status.textContent = statusText
-      lastStatus = statusText
+    // The steadied eight-way answer, shared by the status line and the figure's label.
+    const rel = radar !== null && radar.bearingDeg !== null && radar.headingDeg !== null ? relativeBearing(radar.bearingDeg, radar.headingDeg) : null
+    octant = rel === null ? null : steadyOctant(octant, rel)
+
+    // Compass not answered yet (the tab was just opened): say so instead of an empty line.
+    const statusText = scan.status === 'off' ? RADAR_COPY.starting : radarStatusText(scan, huntMode, octant)
+    setText(status, statusText)
+    setText(detail, radar ? radarDirectionText(radar) : '')
+    setAttr(figure, 'aria-label', octant === null ? RADAR_COPY.ariaNoDirection : `${RADAR_COPY.ariaLoudest} ${RADAR_COPY.directions[octant]}`)
+    setAttr(el, 'data-quality', radar?.quality ?? 'none')
+    setAttr(clear, 'aria-disabled', samples > 0 ? null : 'true')
+
+    const key = `${statusText}|${radar?.quality ?? 'none'}|${radar === null ? 0 : measuredSectors(radar)}`
+    if (key !== announceKey) {
+      announceKey = key
+      announcer.textContent = statusText
     }
-    detail.textContent = radar ? radarDirectionText(radar) : ''
-    const rel = radar?.bearingDeg != null && radar.headingDeg !== null ? relativeBearing(radar.bearingDeg, radar.headingDeg) : null
-    figure.setAttribute(
-      'aria-label',
-      rel === null ? RADAR_COPY.ariaNoDirection : `${RADAR_COPY.ariaLoudest} ${RADAR_COPY.directions[direction8(rel)]}`,
-    )
-    el.dataset['quality'] = radar?.quality ?? 'none'
   }
 
   return { el, render }

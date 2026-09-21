@@ -78,7 +78,10 @@ export interface Config {
   readonly maxFreqStdBins: number
 
   // ---- Lock policy -----------------------------------------------------------------------------
-  /** One sighting whose best per-bin SNR reaches this locks immediately. */
+  /**
+   * One sighting whose best per-bin SNR reaches this locks immediately, but only when
+   * lockConfirmChirps is 1; with the default 2 every chirp needs a confirming second sighting.
+   */
   readonly fastLockSnrDb: number
   /**
    * Two sightings at >= slowLockSnrDb, within lock tolerance of each other and >= slowLockGapMs apart, lock.
@@ -91,6 +94,12 @@ export interface Config {
   readonly slowLockMemoryMs: number
   /** A stable track that stays present this long locks in live mode (continuous tone). */
   readonly sustainedLockMs: number
+  /**
+   * Chirps that must be heard (at the same frequency, >= slowLockGapMs apart) before locking.
+   * 2 = listen a little longer and confirm the beep; 1 = lock on the first strong chirp
+   * (fastLockSnrDb). The user can always lock on a single heard chirp with "Use it now".
+   */
+  readonly lockConfirmChirps: number
   /** Acceptance window around the locked frequency: max(lockTolPct % of f0, lockTolMinBins bins). */
   readonly lockTolPct: number
   readonly lockTolMinBins: number
@@ -235,6 +244,25 @@ export interface Config {
   /** The scan is unavailable if no compass reading arrives within this time. */
   readonly headingTimeoutMs: number
 
+  // ---- Comparing several listeners (extra mics on this device, stations on other devices) ------
+  /** Chirp reports whose onsets lie within this window (after clock alignment) are the same chirp. */
+  readonly compareWindowMs: number
+  /** The loudest listener is only named when it beats the second by at least this much. */
+  readonly compareMinMarginDb: number
+  /** A listener that has not reported for this long is marked lost. */
+  readonly listenerLostMs: number
+  /** Stations send their held level this often in live mode. */
+  readonly stationLevelReportMs: number
+  /** Hub-station clock pings (the median offset of the fastest round trips is used). */
+  readonly stationPingMs: number
+  readonly stationPingKeep: number
+  /** Pairing gives up waiting for ICE gathering after this long. */
+  readonly pairingGatherTimeoutMs: number
+
+  // ---- Log -----------------------------------------------------------------------------------
+  readonly logMaxEntries: number
+  readonly logNoteMaxLength: number
+
   // ---- UI ------------------------------------------------------------------------------------
   readonly noBeepHintMs: number
   readonly lockedBannerMs: number
@@ -281,7 +309,8 @@ export const CONFIG: Config = Object.freeze({
   slowLockSnrDb: 14,
   slowLockGapMs: 2000,
   slowLockMemoryMs: 180_000,
-  sustainedLockMs: 1000,
+  sustainedLockMs: 2000,
+  lockConfirmChirps: 2,
   lockTolPct: 3,
   lockTolMinBins: 3,
   f0Alpha: 0.3,
@@ -359,8 +388,19 @@ export const CONFIG: Config = Object.freeze({
   headingSmoothingMs: 120,
   headingTimeoutMs: 1500,
 
+  compareWindowMs: 1500,
+  compareMinMarginDb: 3,
+  listenerLostMs: 10_000,
+  stationLevelReportMs: 500,
+  stationPingMs: 3000,
+  stationPingKeep: 8,
+  pairingGatherTimeoutMs: 4000,
+
+  logMaxEntries: 200,
+  logNoteMaxLength: 120,
+
   noBeepHintMs: 90_000,
-  lockedBannerMs: 2000,
+  lockedBannerMs: 5000,
   requestHintMs: 6000,
   toastMs: 3500,
   stopConfirmMinReadings: 3,

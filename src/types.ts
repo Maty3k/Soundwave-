@@ -73,7 +73,8 @@ export interface Chirp {
 }
 
 export type LockMode = 'chirp' | 'live'
-export type LockReason = 'fast' | 'slow' | 'sustained'
+/** fast: one strong chirp (lockConfirmChirps 1); slow: confirmed by a second chirp; sustained: continuous tone; manual: 'Use it now'. */
+export type LockReason = 'fast' | 'slow' | 'sustained' | 'manual'
 
 export interface Lock {
   readonly f0Hz: number
@@ -84,6 +85,17 @@ export interface Lock {
   readonly snrDb: number
   /** Sightings heard while listening; they become the first readings of the hunt, oldest first. */
   readonly chirps: readonly Chirp[]
+}
+
+/** A beep heard while listening that still waits for confirmation (lockConfirmChirps). */
+export interface PendingBeep {
+  readonly f0Hz: number
+  /** Best per-bin SNR of its sightings. */
+  readonly snrDb: number
+  /** Time (ms, app clock) of the latest sighting. */
+  readonly heardAtMs: number
+  /** Sightings so far (1 while waiting for the confirming chirp). */
+  readonly sightings: number
 }
 
 // ---- Hunting -----------------------------------------------------------------------------------
@@ -171,6 +183,123 @@ export type HuntEvent =
   | { readonly type: 'mode'; readonly mode: LockMode }
   /** An open chirp was discarded because of a frame gap. */
   | { readonly type: 'missed' }
+
+// ---- Log ---------------------------------------------------------------------------------------
+
+/** One line of the hunt log: a reading plus the user's own note (e.g. where they stood). */
+export interface LogEntry {
+  /** The reading's id (a merged chirp group updates its entry in place). */
+  readonly id: number
+  /** Wall-clock time of the reading (epoch ms), for display. */
+  readonly wallMs: number
+  readonly verdict: Verdict
+  readonly deltaPrevDb: number | null
+  readonly pct: number | null
+  readonly levelDb: number
+  readonly f0Hz: number
+  readonly clipped: boolean
+  readonly chirpCount: number
+  readonly source: 'chirp' | 'train'
+  /** Name of the listener that heard this chirp loudest (stations / extra mics), if known. */
+  readonly loudest: string | null
+  /** Free text typed by the user; kept when the entry is updated. */
+  readonly note: string
+}
+
+// ---- Listeners: extra microphones on this device and stations on other devices ----------------
+
+/** self: this device's main mic (runs the hunt); mic: another mic on this device; station: another device. */
+export type ListenerKind = 'self' | 'mic' | 'station'
+export type ListenerStatus = 'connecting' | 'listening' | 'lost'
+
+export interface ListenerView {
+  readonly id: string
+  readonly name: string
+  readonly kind: ListenerKind
+  readonly status: ListenerStatus
+  /** Calibrated level of this listener's report for the latest compared chirp (or live held level). */
+  readonly levelDb: number | null
+  /** levelDb minus the loudest listener's level in the same comparison (0 for the loudest). */
+  readonly deltaDb: number | null
+  readonly isLoudest: boolean
+  /** Calibration offset added to this listener's raw levels. */
+  readonly offsetDb: number
+  /** App-clock time of the last message / report from this listener. */
+  readonly lastSeenMs: number | null
+}
+
+export interface ComparisonEntry {
+  readonly id: string
+  readonly name: string
+  /** Calibrated level. */
+  readonly levelDb: number
+  readonly clipped: boolean
+}
+
+/** Every listener's report for one chirp, loudest first. */
+export interface Comparison {
+  /** The hub's reading id this comparison belongs to (null in live mode). */
+  readonly readingId: number | null
+  readonly tMs: number
+  readonly ranking: readonly ComparisonEntry[]
+  /** Named only when it beats the second by config.compareMinMarginDb. */
+  readonly loudestId: string | null
+  readonly marginDb: number | null
+}
+
+export type PairStep = 'idle' | 'preparing' | 'showOffer' | 'scanAnswer' | 'pasteAnswer' | 'connecting' | 'error'
+
+export interface PairingView {
+  readonly step: PairStep
+  /** Compact offer code shown as QR and text while step is showOffer / scanAnswer / pasteAnswer. */
+  readonly offerCode: string | null
+  readonly message: string | null
+  /** A camera QR scanner (BarcodeDetector) is available on this device. */
+  readonly canScan: boolean
+}
+
+/** Hub side: everything the Stations panel shows. */
+export interface StationsView {
+  /** 'self' first, then extra mics, then stations. */
+  readonly listeners: readonly ListenerView[]
+  /** Other microphones on this device that can be added (after mic permission, labels are known). */
+  readonly availableMics: readonly { readonly deviceId: string; readonly label: string }[]
+  readonly pairing: PairingView
+  readonly comparison: Comparison | null
+  /** Waiting for a chirp heard by every listener, to equalise their levels. */
+  readonly calibrating: boolean
+}
+
+export type StationStep =
+  | 'name'
+  | 'starting'
+  | 'scanOffer'
+  | 'pasteOffer'
+  | 'answering'
+  | 'showAnswer'
+  | 'connected'
+  | 'lost'
+  | 'error'
+
+/** Station side: the screen of a device used as a listening station. */
+export interface StationModeView {
+  readonly step: StationStep
+  readonly name: string
+  /** Compact answer code to show to the hub (QR + text) while step is showAnswer. */
+  readonly answerCode: string | null
+  /** Frequency the hub asked this station to listen to (null until the hub has a lock). */
+  readonly f0Hz: number | null
+  /** Current band level at f0 (0..1 for the bar), and the last chirp's level in dB. */
+  readonly level: number
+  readonly lastChirpDb: number | null
+  readonly lastChirpAtMs: number | null
+  readonly chirpsSent: number
+  readonly message: string | null
+  readonly canScan: boolean
+}
+
+/** Which panel the hunting screen shows under the verdict. */
+export type HuntPanel = 'meter' | 'direction' | 'log' | 'stations'
 
 // ---- Direction scan (radar) --------------------------------------------------------------------
 
@@ -262,10 +391,13 @@ export type Screen =
   | { readonly kind: 'idle' }
   | { readonly kind: 'requesting'; readonly sinceMs: number }
   | { readonly kind: 'listening'; readonly sinceMs: number }
-  | { readonly kind: 'locked'; readonly sinceMs: number }
+  /** held: the user touched the screen, so it no longer advances to hunting on its own. */
+  | { readonly kind: 'locked'; readonly sinceMs: number; readonly held?: boolean }
   | { readonly kind: 'hunting' }
   | { readonly kind: 'paused'; readonly from: PausedFrom; readonly needsGesture: boolean }
   | { readonly kind: 'error'; readonly code: ErrorCode }
+  /** This device is a listening station for another device's hunt. */
+  | { readonly kind: 'station' }
 
 export interface Toast {
   readonly text: string
@@ -288,6 +420,16 @@ export interface AppState {
   readonly debug: boolean
   /** Direction scan (radar) while hunting. */
   readonly scan: ScanState
+  /** A beep heard while listening, waiting for a confirming chirp. */
+  readonly pending: PendingBeep | null
+  /** Hunting screen panel under the verdict. */
+  readonly panel: HuntPanel
+  /** Hunt log, oldest first (at most config.logMaxEntries). */
+  readonly log: readonly LogEntry[]
+  /** Hub side: extra mics and stations (null until the hunt has one or the panel was opened). */
+  readonly stations: StationsView | null
+  /** Station side: present while screen.kind is 'station'. */
+  readonly stationMode: StationModeView | null
 }
 
 export type AppEvent =
@@ -297,6 +439,8 @@ export type AppEvent =
   | { readonly type: 'tick'; readonly nowMs: number; readonly micLevel?: number }
   | { readonly type: 'lock'; readonly lock: Lock; readonly nowMs: number }
   | { readonly type: 'confirmLock' }
+  /** The user interacted with the locked screen: stop the automatic advance. */
+  | { readonly type: 'holdLock' }
   | { readonly type: 'notIt'; readonly nowMs: number }
   | { readonly type: 'hunt'; readonly view: HuntView }
   | { readonly type: 'relisten'; readonly nowMs: number }
@@ -317,3 +461,12 @@ export type AppEvent =
   | { readonly type: 'scanStatus'; readonly status: ScanStatus }
   | { readonly type: 'radar'; readonly view: RadarView }
   | { readonly type: 'scanClose' }
+  | { readonly type: 'pending'; readonly pending: PendingBeep | null }
+  | { readonly type: 'panel'; readonly panel: HuntPanel }
+  | { readonly type: 'logUpsert'; readonly entry: LogEntry }
+  | { readonly type: 'logNote'; readonly id: number; readonly note: string }
+  | { readonly type: 'stations'; readonly view: StationsView | null }
+  /** Landing -> station screen (this device becomes a station). */
+  | { readonly type: 'stationStart' }
+  | { readonly type: 'stationView'; readonly view: StationModeView }
+  | { readonly type: 'stationStop' }

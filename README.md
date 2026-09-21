@@ -4,26 +4,40 @@
 
 Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, and a single microphone cannot hear direction, so Soundwave plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around. On phones, a direction scan adds a radar that uses your body as a shield to show the loudest side.
 
-Everything runs in your browser. Audio is analysed live and never recorded, stored or uploaded, and the page makes no network requests after it has loaded.
+Everything runs in your browser. Audio is analysed live and never recorded, stored or uploaded. After the page has loaded it talks to no server; the only network traffic is between your own devices when you pair listening stations (see below), and even then only loudness numbers are exchanged, never audio.
 
 ## How to use it
 
 1. Tap **Start listening** and allow the microphone.
-2. Wait for one chirp. Soundwave shows the frequency it locked onto, for example 3,120 Hz. Tap **Not it** if that was the wrong sound.
-3. Stand still until the next chirp. Read the verdict: **WARMER**, **COLDER** or **ABOUT THE SAME**, with the change in dB and a 0–100 meter relative to your best reading so far.
-4. Move 2–3 m and wait again. A countdown shows when the next chirp is due and asks you to hold still for the last few seconds.
-5. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen.
+2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous beep locks after about 2 seconds. If you are sure after the first chirp, tap **Use it now**. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
+3. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
+4. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen. They stop when it is time to hold still.
 
 Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means the microphone is overloaded: you are probably within arm's reach. Smoke detectors live on ceilings.
 
+The hunting screen has tabs: **Meter**, **Direction** (phones with a compass), **Log** and **Stations**.
+
+### Log
+
+Every chirp adds a line to the **Log** tab: time, verdict, level change and frequency, plus a note field where you can type where you stood ("hallway by the door"). **Copy log** puts the whole log on the clipboard as text.
+
 ### Direction scan (phones with a compass)
 
-A single microphone cannot hear direction, so Soundwave uses your body as a shield instead. Tap **Direction** on the hunting screen, hold the phone flat in front of your chest with the top pointing away from you, and stay on the spot:
+A single microphone cannot hear direction, so Soundwave uses your body as a shield instead. Open the **Direction** tab, hold the phone flat in front of your chest with the top pointing away from you, and stay on the spot:
 
 - **Chirps:** after each chirp, turn a quarter turn. After three or four chirps the radar shows an arrow toward the loudest side.
 - **Continuous tones:** turn slowly, one full turn in about 20 seconds.
 
-The radar is drawn from the phone's point of view: up is where the phone points, so the arrow keeps pointing the right way as you turn. Your body makes sound from behind a few dB quieter. Close to the source the difference is large and the arrow points at it. From another room it usually points at the doorway the sound comes through, which is still the way to go. "No clear direction" means the sound reaches you equally from everywhere: move toward the warmest room and scan again. Laptops have no compass, so the button only appears on touch devices.
+The radar is drawn from the phone's point of view: up is where the phone points, so the arrow keeps pointing the right way as you turn. Your body makes sound from behind a few dB quieter. Close to the source the difference is large and the arrow points at it. From another room it usually points at the doorway the sound comes through, which is still the way to go. "No clear direction" means the sound reaches you equally from everywhere: move toward the warmest room and scan again. Laptops have no compass, so the tab only appears on touch devices.
+
+### Stations and extra microphones
+
+To pinpoint the beep faster, let several listeners compare every chirp:
+
+- **Stations.** On another phone or laptop, open the same page and choose **Use this device as a station**, give it a name such as "Kitchen", and leave it in another room. On your main phone, open **Stations**, tap **Add a phone** and let the station scan the QR code (or copy, share and paste the code). The station then shows a reply code for the main phone to scan or paste. Both devices must be on the same Wi-Fi. They connect directly to each other (WebRTC, no server, no account) and exchange only loudness numbers.
+- **Extra microphones.** A laptop with several microphones (for example USB microphones on long cables) can add them under **Add a microphone**. iPhones and Safari record from one microphone at a time, and Android phones usually refuse a second one, so this is mainly for laptops.
+
+On every chirp the Stations tab shows which listener heard it loudest, for example "Loudest: Kitchen, 12 dB louder than this phone". Different devices have different microphones: put them side by side and tap **Calibrate** once before spreading them out.
 
 ## Browser support
 
@@ -92,6 +106,8 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
 - The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
+- Scanning pairing QR codes needs a browser with a built-in QR detector (Chrome on Android). Elsewhere, use Copy code or Share and paste the code on the other device.
+- Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
 
 ### Tuning
 
@@ -108,10 +124,15 @@ src/
   copy.ts          all user-facing text
   ui.ts, style.css DOM rendering and styles
   platform.ts      capabilities, wake lock, haptics, settings storage
+  hub.ts           stations and extra microphones on the main device (pairing, comparison)
+  stationMode.ts   this device as a listening station
+  extraMics.ts     extra microphones on the same device
+  net/             pairing codes, QR codes, messages and clock sync between devices
+  ui/              log panel, stations panel, station screen
   orientation.ts   compass heading for the direction scan
   radarUi.ts       direction-scan radar panel
   audio/           microphone, analyser loop, Geiger clicker (browser code)
-  dsp/             pure signal processing: spectrum, detection, hunting, click maths, radar, test harness
+  dsp/             pure signal processing: spectrum, detection, hunting, click maths, radar, listener comparison, test harness
 tools/make-chirp-wav.mjs   test-signal generator
 docs/PLAN.md               design plan and decisions
 ```
