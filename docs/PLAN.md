@@ -10,7 +10,7 @@ The owner asked to run Soundwave on their Laravel Herd. Herd (1.30, installed th
 
 - **Node comes from Herd.** Herd's bundled nvm installed Node 26.9.0 with npm 11.19. No separate Node install is needed, and step 1 reduces to setting `NODE_USE_SYSTEM_CA=1` for GitHub-bound Node tools. `.node-version` is `26` so CI matches local; `engines` is `>=24`. Node 26 becomes LTS on 2026-10-28.
 - **Relative base path.** `vite.config.ts` uses `base: './'` instead of `'/Soundwave-/'`. The same build then works at the root of a Herd site and under `/Soundwave-/` on GitHub Pages. The app is a single page with no routes, so relative URLs are safe.
-- **Herd serves the production build (`dist/`).** Two Herd links point at `dist/` through directory junctions in `%USERPROFILE%\.config\herd\configalet\Sites`. Junctions are used because `herd link` creates a symbolic link, which needs admin rights on this machine.
+- **Herd serves the production build (`dist/`).** Two Herd links point at `dist/` through directory junctions in `%USERPROFILE%\.config\herd\config\valet\Sites`. Junctions are used because `herd link` creates a symbolic link, which needs admin rights on this machine.
   - `http://soundwave.localhost`: browsers treat `*.localhost` as a secure context, so the microphone works with no certificate. This is the Herd URL to use today.
   - `http://soundwave.test`: served, but plain HTTP is not a secure context, so the microphone API is missing. It becomes `https://soundwave.test` after `herd secure soundwave`, which needs one admin (UAC) approval to trust Herd's local certificate authority, or a per-user import of that CA with one confirmation click.
   - Rebuild to update the Herd site: `npm run build`, or keep `npm run build:watch` running while working.
