@@ -1,0 +1,25 @@
+{
+  "name": "soundwave",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Follow the beep. Find a mystery beep by walking hot/cold with your phone or laptop.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:watch": "vite build --watch",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "chirps": "node tools/make-chirp-wav.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}

@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules
+dist
+dist-ssr
+*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Test and tooling output
+.vitest/
+coverage/
+
+# Local secrets and certificates
+.env*
+*.pem
+
+# Generated test signals (tools/make-chirp-wav.mjs)
+public/dev/
+
+# Editors and OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
