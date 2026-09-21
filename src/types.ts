@@ -172,6 +172,51 @@ export type HuntEvent =
   /** An open chirp was discarded because of a frame gap. */
   | { readonly type: 'missed' }
 
+// ---- Direction scan (radar) --------------------------------------------------------------------
+
+/**
+ * needMore: too few directions measured; unclear: measured, but loud and quiet sides differ too
+ * little; rough / clear: a direction is shown, with clear meaning a bigger difference and no gaps.
+ */
+export type RadarQuality = 'needMore' | 'unclear' | 'rough' | 'clear'
+
+export interface RadarSector {
+  /** Compass heading (degrees clockwise, in the sensor's frame) at the centre of the sector. */
+  readonly centerDeg: number
+  /** Power-mean level of the samples in this sector; null when not measured. */
+  readonly levelDb: number | null
+  readonly samples: number
+}
+
+export interface RadarView {
+  /** 'chirp': one sample per chirp, coarse sectors; 'live': continuous sampling, fine sectors. */
+  readonly mode: LockMode
+  readonly sectors: readonly RadarSector[]
+  /** Heading of the loudest direction; null unless quality is 'rough' or 'clear'. */
+  readonly bearingDeg: number | null
+  /** Loudest minus quietest measured sector; null with fewer than two sectors. */
+  readonly contrastDb: number | null
+  readonly quality: RadarQuality
+  /** Samples taken so far (chirps in chirp mode, frames in live mode). */
+  readonly samples: number
+  /** Largest angular gap between measured sector centres; null before any sample. */
+  readonly maxGapDeg: number | null
+  /** Where to face next: the middle of the largest unmeasured gap; null when nothing is missing. */
+  readonly suggestDeg: number | null
+  /** The device's current heading; null without a compass reading. */
+  readonly headingDeg: number | null
+}
+
+/** off: not scanning; starting: waiting for the first compass reading; unavailable / denied: no compass. */
+export type ScanStatus = 'off' | 'starting' | 'active' | 'unavailable' | 'denied'
+
+export interface ScanState {
+  /** The scan panel is shown (replaces the meter while hunting). */
+  readonly open: boolean
+  readonly status: ScanStatus
+  readonly radar: RadarView | null
+}
+
 // ---- Microphone and platform -------------------------------------------------------------------
 
 /** What getSettings() reported for one audio processor: false -> 'off', true -> 'on', missing -> 'unknown'. */
@@ -200,6 +245,8 @@ export interface Capabilities {
   readonly wakeLock: boolean
   /** Vibration API present on a touch device (in practice Chrome on Android). */
   readonly haptics: boolean
+  /** DeviceOrientation API on a touch device: a compass may be available for the direction scan. */
+  readonly compass: boolean
 }
 
 export interface Settings {
@@ -239,6 +286,8 @@ export interface AppState {
   readonly confirmStop: boolean
   readonly wakeLockFailed: boolean
   readonly debug: boolean
+  /** Direction scan (radar) while hunting. */
+  readonly scan: ScanState
 }
 
 export type AppEvent =
@@ -264,3 +313,7 @@ export type AppEvent =
   | { readonly type: 'toast'; readonly text: string; readonly nowMs: number }
   | { readonly type: 'settings'; readonly patch: Partial<Settings> }
   | { readonly type: 'wakeLockFailed' }
+  | { readonly type: 'scanOpen' }
+  | { readonly type: 'scanStatus'; readonly status: ScanStatus }
+  | { readonly type: 'radar'; readonly view: RadarView }
+  | { readonly type: 'scanClose' }

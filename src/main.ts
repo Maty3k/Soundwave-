@@ -1,8 +1,9 @@
 /**
  * Wiring only: the Start gesture creates the AudioContext and opens the mic; frames flow into the
  * detector (listening) or the hunt (locked / hunting); a requestAnimationFrame loop pushes a hunt
- * snapshot and a clock tick into the store, drives clicks and haptics, and renders.
- * All decisions live in the pure modules (src/dsp, src/app.ts); this file only connects them.
+ * snapshot, the direction-scan radar and a clock tick into the store, drives clicks and haptics,
+ * and renders. All decisions live in the pure modules (src/dsp, src/app.ts); this file only
+ * connects them to the browser.
  */
 import './style.css'
 import { CONFIG } from './config.ts'
@@ -20,12 +21,14 @@ import {
   saveSettings,
   WakeLockKeeper,
 } from './platform.ts'
+import { HeadingSource } from './orientation.ts'
 import { acquireMic, stopMic, type MicHandle } from './audio/mic.ts'
 import { Engine } from './audio/engine.ts'
 import { Clicker } from './audio/clicker.ts'
 import { createDetector, detectStep, type DetectorState } from './dsp/detect.ts'
 import { createHunt, huntStep, huntView, resetBest, type HuntState } from './dsp/hunt.ts'
-import { chooseClickFreq, clickRateHz, vibrationTier } from './dsp/geiger.ts'
+import { chooseClickFreqSticky, clickRateHz, vibrationTier } from './dsp/geiger.ts'
+import { addRadarSample, clearRadar, createRadar, radarView, raiseLastSample, type RadarState } from './dsp/radar.ts'
 
 declare global {
   interface Window {
@@ -41,6 +44,12 @@ interface Session {
   readonly clicker: Clicker
   detector: DetectorState | null
   hunt: HuntState | null
+  /** Current click carrier; kept while it still suits the (slowly drifting) locked frequency. */
+  carrierHz: number | null
+  /** Direction-scan accumulator while the scan is open. */
+  radar: RadarState | null
+  /** A frame arrived since the loop last sampled the live radar. */
+  newFrame: boolean
   /** The next frame must be flagged as a gap (after a pause), so open measurements are discarded. */
   forceGap: boolean
   readonly unwatch: Array<() => void>
@@ -58,48 +67,55 @@ const wakeLock = new WakeLockKeeper(() => {
   store.dispatch({ type: 'wakeLockFailed' })
   toast(TEXT.wakeLockFailed)
 })
+const heading = new HeadingSource(CONFIG)
 
 let session: Session | null = null
-let starting = false
+/** Increments on every capture attempt; a stale getUserMedia result (after Cancel) is discarded. */
+let captureSeq = 0
 let lastRmsDb: number = CONFIG.silentDb
 /** Frequencies rejected with "Not it", ignored by new detectors until untilMs. */
 let exclusions: Array<{ hz: number; untilMs: number }> = []
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('#app missing')
-const ui = mountUi(root, {
-  onStart: () => beginCapture('start'),
-  onRetry: () => beginCapture('retry'),
-  onStopRequest,
-  onStopConfirm: () => {
-    store.dispatch({ type: 'stopConfirm' })
-    teardownIfIdle()
+const ui = mountUi(
+  root,
+  {
+    onStart: () => beginCapture('start'),
+    onRetry: () => beginCapture('retry'),
+    onStopRequest,
+    onStopConfirm: () => {
+      store.dispatch({ type: 'stopConfirm' })
+      teardownIfIdle()
+    },
+    onStopCancel: () => store.dispatch({ type: 'stopCancel' }),
+    onConfirmLock: () => store.dispatch({ type: 'confirmLock' }),
+    onNotIt,
+    onRelisten,
+    onResetBest,
+    onResume: () => void resumeFromPause(),
+    onBack: () => store.dispatch({ type: 'back' }),
+    onReload: () => location.reload(),
+    onCopyLink: () => void copyLink(),
+    onToggleClicks: () => updateSettings({ clicks: !store.get().settings.clicks }),
+    onToggleHaptics: () => updateSettings({ haptics: !store.get().settings.haptics }),
+    onScanToggle,
+    onScanClear,
   },
-  onStopCancel: () => store.dispatch({ type: 'stopCancel' }),
-  onConfirmLock: () => store.dispatch({ type: 'confirmLock' }),
-  onNotIt,
-  onRelisten,
-  onResetBest,
-  onResume: () => void resumeFromPause(),
-  onBack: () => store.dispatch({ type: 'back' }),
-  onReload: () => location.reload(),
-  onCopyLink: () => void copyLink(),
-  onToggleClicks: () => updateSettings({ clicks: !store.get().settings.clicks }),
-  onToggleHaptics: () => updateSettings({ haptics: !store.get().settings.haptics }),
-}, CONFIG)
+  CONFIG,
+)
 
 // ---- Capture lifecycle ---------------------------------------------------------------------------
 
 /** Must run synchronously inside the click handler: the AudioContext is created and resumed here. */
 function beginCapture(via: 'start' | 'retry'): void {
-  if (session || starting) return
-  starting = true
+  if (session || store.get().screen.kind === 'requesting') return
+  const seq = ++captureSeq
   let ctx: AudioContext
   try {
     ctx = createAudioContext()
   } catch {
-    starting = false
-    store.dispatch({ type: via === 'start' ? 'start' : 'retry', nowMs: now() })
+    store.dispatch({ type: via, nowMs: now() })
     store.dispatch({ type: 'micError', code: 'unsupported' })
     return
   }
@@ -109,17 +125,17 @@ function beginCapture(via: 'start' | 'retry'): void {
   store.dispatch({ type: via, nowMs: now() })
 
   void acquireMic().then((res) => {
-    starting = false
+    const current = seq === captureSeq && store.get().screen.kind === 'requesting'
+    if (!current) {
+      // Cancelled while the permission prompt was open (or superseded by a newer attempt).
+      if (res.ok) stopMic(res.mic.stream)
+      void ctx.close().catch(() => undefined)
+      return
+    }
     if (!res.ok) {
       void ctx.close().catch(() => undefined)
       wakeLock.disable()
       store.dispatch({ type: 'micError', code: res.code })
-      return
-    }
-    if (store.get().screen.kind !== 'requesting') {
-      // Cancelled while the permission prompt was open.
-      stopMic(res.mic.stream)
-      void ctx.close().catch(() => undefined)
       return
     }
     const clicker = new Clicker(ctx, CONFIG)
@@ -130,6 +146,9 @@ function beginCapture(via: 'start' | 'retry'): void {
       engine: makeEngine(ctx, res.mic.stream, clicker),
       detector: createDetector(CONFIG, { excludeHz: activeExclusions() }),
       hunt: null,
+      carrierHz: null,
+      radar: null,
+      newFrame: false,
       forceGap: false,
       unwatch: [],
     }
@@ -194,6 +213,7 @@ function silence(s: Session): void {
 }
 
 function teardown(): void {
+  stopScanSensors()
   const s = session
   session = null
   if (!s) return
@@ -218,6 +238,7 @@ function onFrame(raw: Frame): void {
   if (!s) return
   const frame: Frame = s.forceGap ? { ...raw, gap: true } : raw
   s.forceGap = false
+  s.newFrame = true
   lastRmsDb = frame.rmsDb
   const kind = store.get().screen.kind
   if (kind === 'listening' && s.detector) {
@@ -231,7 +252,8 @@ function onFrame(raw: Frame): void {
 function onLock(s: Session, lock: Lock, tMs: number): void {
   s.detector = null
   s.hunt = createHunt(lock, CONFIG)
-  s.clicker.setCarrier(chooseClickFreq(lock.f0Hz, CONFIG))
+  s.carrierHz = chooseClickFreqSticky(lock.f0Hz, null, CONFIG)
+  s.clicker.setCarrier(s.carrierHz)
   store.dispatch({ type: 'lock', lock, nowMs: tMs })
   store.dispatch({ type: 'hunt', view: huntView(s.hunt, tMs, CONFIG) })
   if (store.get().settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
@@ -239,11 +261,34 @@ function onLock(s: Session, lock: Lock, tMs: number): void {
 
 function handleHuntEvents(s: Session, events: readonly HuntEvent[]): void {
   for (const e of events) {
-    if (e.type === 'reading') {
-      if (store.get().settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
-      if (s.hunt) s.clicker.setCarrier(chooseClickFreq(huntView(s.hunt, now(), CONFIG).f0Hz, CONFIG))
-    } else if (e.type === 'mode') {
-      toast(e.mode === 'live' ? TEXT.modeLive : TEXT.modeChirp)
+    switch (e.type) {
+      case 'reading': {
+        if (store.get().settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
+        if (s.hunt) {
+          const f0 = huntView(s.hunt, now(), CONFIG).f0Hz
+          const carrier = chooseClickFreqSticky(f0, s.carrierHz, CONFIG)
+          if (carrier !== s.carrierHz) {
+            s.carrierHz = carrier
+            s.clicker.setCarrier(carrier)
+          }
+        }
+        // Direction scan (chirp mode): one sample per reading, at the heading held during the chirp.
+        const h = heading.headingDeg
+        if (s.radar?.mode === 'chirp' && h !== null && !e.reading.clipped) addRadarSample(s.radar, h, e.reading.levelDb)
+        break
+      }
+      case 'readingUpdated':
+        // A chirp group grew (double chirp, UPS burst): keep the louder level for the same direction.
+        if (s.radar?.mode === 'chirp' && !e.reading.clipped) raiseLastSample(s.radar, e.reading.levelDb)
+        break
+      case 'mode':
+        toast(e.mode === 'live' ? TEXT.modeLive : TEXT.modeChirp)
+        // The two modes use different sector layouts: start the scan over.
+        if (s.radar) s.radar = createRadar(e.mode, CONFIG)
+        break
+      case 'onset':
+      case 'missed':
+        break
     }
   }
 }
@@ -251,12 +296,7 @@ function handleHuntEvents(s: Session, events: readonly HuntEvent[]): void {
 // ---- Controls -----------------------------------------------------------------------------------
 
 function onStopRequest(): void {
-  const kind = store.get().screen.kind
-  if (kind === 'requesting') {
-    // The permission prompt is still open; acquireMic's callback cleans up the context.
-    store.dispatch({ type: 'stopRequest' })
-    return
-  }
+  // From requesting, the pending getUserMedia callback cleans up its own context.
   store.dispatch({ type: 'stopRequest' })
   teardownIfIdle()
 }
@@ -274,6 +314,7 @@ function onNotIt(): void {
 }
 
 function onRelisten(): void {
+  stopScanSensors()
   const s = session
   if (s) {
     s.hunt = null
@@ -314,8 +355,49 @@ async function copyLink(): Promise<void> {
     await navigator.clipboard.writeText(location.href)
     toast(TEXT.linkCopied)
   } catch {
-    toast(location.href)
+    toast(TEXT.linkCopyFailed)
   }
+}
+
+// ---- Direction scan -----------------------------------------------------------------------------
+
+/**
+ * Open or close the scan. Runs inside the click: HeadingSource.start() asks iOS for compass access
+ * synchronously, which only works during a user gesture.
+ */
+function onScanToggle(): void {
+  if (store.get().scan.open) {
+    stopScanSensors()
+    store.dispatch({ type: 'scanClose' })
+    return
+  }
+  const s = session
+  if (!s?.hunt || store.get().screen.kind !== 'hunting') return
+  store.dispatch({ type: 'scanOpen' })
+  if (!store.get().scan.open) return
+  void heading.start().then((status) => {
+    const cur = session
+    if (!store.get().scan.open || cur === null || cur.hunt === null) {
+      heading.stop()
+      return
+    }
+    if (status !== 'ok') {
+      heading.stop()
+      store.dispatch({ type: 'scanStatus', status })
+      return
+    }
+    cur.radar = createRadar(huntView(cur.hunt, now(), CONFIG).mode, CONFIG)
+    store.dispatch({ type: 'scanStatus', status: 'active' })
+  })
+}
+
+function onScanClear(): void {
+  if (session?.radar) clearRadar(session.radar)
+}
+
+function stopScanSensors(): void {
+  heading.stop()
+  if (session) session.radar = null
 }
 
 // ---- Background / foreground --------------------------------------------------------------------
@@ -344,6 +426,8 @@ async function tryAutoResume(s: Session): Promise<void> {
   if (session !== s) return
   const healthy = s.ctx.state === 'running' && s.mic.track.readyState === 'live' && !s.mic.track.muted
   if (healthy) restartEngine(s)
+  // Fresh clock first, so a resumed listening screen does not count the time spent hidden.
+  store.dispatch({ type: 'tick', nowMs: now() })
   store.dispatch({ type: 'visible', healthy })
 }
 
@@ -376,6 +460,7 @@ async function resumeFromPause(): Promise<void> {
   }
   if (s.ctx.state !== 'running') return // still blocked; the overlay stays
   restartEngine(s)
+  store.dispatch({ type: 'tick', nowMs: now() })
   store.dispatch({ type: 'resumed' })
   void wakeLock.enable()
 }
@@ -392,7 +477,7 @@ function micLevel(rmsDb: number): number {
   return Math.max(0, Math.min(1, x))
 }
 
-/** Warmth that drives clicks and haptics, or null for silence. */
+/** Warmth that drives the click rate, or null for silence. */
 function feedbackWarmth(s: AppState): number | null {
   if (s.screen.kind !== 'hunting' || !s.hunt) return null
   if (flags.forceWarmth !== null) return flags.forceWarmth // self-noise test: ignores the hold window
@@ -407,7 +492,19 @@ function updateFeedback(s: AppState): void {
   sess.clicker.setRate(w === null || !s.settings.clicks ? 0 : clickRateHz(w, CONFIG))
   const view = s.hunt
   const clipped = view ? (view.mode === 'live' ? (view.live?.clipped ?? false) : (view.last?.clipped ?? false)) : false
-  haptics.setTier(w === null || !s.settings.haptics ? null : vibrationTier(w, clipped, CONFIG))
+  // A clipped reading buzzes even before the meter has a value (the first reading can already clip).
+  const quiet = s.screen.kind !== 'hunting' || !view || view.holdActive || !s.settings.haptics
+  haptics.setTier(quiet ? null : clipped ? vibrationTier(w, true, CONFIG) : w === null ? null : vibrationTier(w, false, CONFIG))
+}
+
+/** Live-mode scan: sample the beep's band level at the current heading while it is heard. */
+function sampleLiveRadar(s: Session, state: AppState): void {
+  const radar = s.radar
+  const view = state.hunt
+  const h = heading.headingDeg
+  if (!radar || radar.mode !== 'live' || !view || view.mode !== 'live' || !s.newFrame || h === null) return
+  s.newFrame = false
+  if (view.hearing && !(view.live?.clipped ?? false)) addRadarSample(radar, h, view.levelDb)
 }
 
 function loop(): void {
@@ -416,6 +513,10 @@ function loop(): void {
   const s = session
   const kind = store.get().screen.kind
   if (s?.hunt && (kind === 'locked' || kind === 'hunting')) store.dispatch({ type: 'hunt', view: huntView(s.hunt, t, CONFIG) })
+  if (s && store.get().scan.open) {
+    sampleLiveRadar(s, store.get())
+    if (s.radar) store.dispatch({ type: 'radar', view: radarView(s.radar, heading.headingDeg, CONFIG) })
+  }
   const state = store.get()
   updateFeedback(state)
   ui.render(state)

@@ -5,6 +5,7 @@
  */
 import type { Config } from './config.ts'
 import type { Capabilities, Settings } from './types.ts'
+import { headingMaybeSupported } from './orientation.ts'
 
 // ---- Capabilities and AudioContext -------------------------------------------------------------
 
@@ -31,6 +32,7 @@ export function detectCapabilities(): Capabilities {
     audioContext: audioContextCtor() !== null,
     wakeLock: nav && 'wakeLock' in navigator,
     haptics: nav && 'vibrate' in navigator && (navigator.maxTouchPoints ?? 0) > 0,
+    compass: nav && headingMaybeSupported(),
   }
 }
 

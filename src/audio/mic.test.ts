@@ -525,14 +525,19 @@ describe('Engine', () => {
     return { clock, ctx, frames, engine, analyser: ctx.analysers[0]!, source: ctx.sources[0]! }
   }
 
-  it('builds source -> analyser with the configured size, smoothing and range, never touching the destination', () => {
-    const { analyser, source, engine } = setup()
+  it('builds source -> analyser -> silent gain -> destination with the configured size, smoothing and range', () => {
+    const { analyser, source, engine, ctx } = setup()
     expect(analyser.fftSize).toBe(CONFIG.fftSize)
     expect(analyser.smoothingTimeConstant).toBe(0)
     expect(analyser.minDecibels).toBe(CONFIG.minDecibels)
     expect(analyser.maxDecibels).toBe(CONFIG.maxDecibels)
     expect(source.connectedTo).toEqual([analyser])
-    expect(analyser.connectedTo).toEqual([])
+    // The analyser reaches the destination only through a gain fixed at 0: no feedback, always pulled.
+    expect(ctx.gains).toHaveLength(1)
+    const sink = ctx.gains[0]!
+    expect(analyser.connectedTo).toEqual([sink])
+    expect(sink.gain.value).toBe(0)
+    expect(sink.connectedTo).toEqual([ctx.destination])
     expect(engine.analyser).toBe(analyser as unknown as AnalyserNode)
     expect(engine.running).toBe(false)
   })
@@ -697,13 +702,14 @@ describe('Engine', () => {
     expect(stopped.clock.pending).toBe(0)
   })
 
-  it('dispose() stops and disconnects both nodes; start() afterwards is a no-op', () => {
-    const { clock, frames, engine, analyser, source } = setup()
+  it('dispose() stops and disconnects every node; start() afterwards is a no-op', () => {
+    const { clock, frames, engine, analyser, source, ctx } = setup()
     engine.start()
     clock.advance(hop)
     engine.dispose()
     expect(source.disconnects).toBe(1)
     expect(analyser.disconnects).toBe(1)
+    expect(ctx.gains[0]!.disconnects).toBe(1)
     engine.start()
     expect(engine.running).toBe(false)
     expect(clock.pending).toBe(0)

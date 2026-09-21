@@ -1,7 +1,8 @@
 /**
  * Audio engine: MediaStream -> AnalyserNode, polled on a deadline-corrected timer that turns each
- * snapshot into a Frame for the pure reducers. The analyser is never connected to the destination
- * (no feedback path); AnalyserNode is pulled by the context on its own.
+ * snapshot into a Frame for the pure reducers. The analyser feeds a GainNode fixed at 0 that is
+ * connected to the destination: silent (no feedback path), but it guarantees the context pulls the
+ * analyser on every engine, including WebKit versions that skip nodes not reaching the output.
  */
 import type { Config } from '../config.ts'
 import { clipFraction, rmsDb, sanitizeDb, SILENT_DB } from '../dsp/spectrum.ts'
@@ -42,6 +43,8 @@ export class Engine {
   private readonly now: () => number
   private readonly source: MediaStreamAudioSourceNode
   private readonly node: AnalyserNode
+  /** Gain 0 -> destination: keeps the analyser pulled without making any sound. */
+  private readonly sink: GainNode
   private readonly spectrum: Float32Array<ArrayBuffer>
   private readonly samples: Float32Array<ArrayBuffer>
   private bytes: Uint8Array<ArrayBuffer> | null = null
@@ -77,6 +80,10 @@ export class Engine {
     this.node = node
     this.source = opts.ctx.createMediaStreamSource(opts.stream)
     this.source.connect(node)
+    this.sink = opts.ctx.createGain()
+    this.sink.gain.value = 0
+    node.connect(this.sink)
+    this.sink.connect(opts.ctx.destination)
     this.spectrum = new Float32Array(node.frequencyBinCount)
     this.samples = new Float32Array(node.fftSize)
   }
@@ -126,6 +133,11 @@ export class Engine {
     }
     try {
       this.node.disconnect()
+    } catch {
+      // Already disconnected.
+    }
+    try {
+      this.sink.disconnect()
     } catch {
       // Already disconnected.
     }

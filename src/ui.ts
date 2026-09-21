@@ -30,6 +30,7 @@ import {
 } from './copy.ts'
 import type { ErrorAction } from './copy.ts'
 import type { AppState, ErrorCode, HuntView, LockMode, MicDiag, Reading, Screen, Verdict } from './types.ts'
+import { createRadarPanel } from './radarUi.ts'
 
 /** Callbacks for every control. main.ts turns them into store events and side effects. */
 export interface UiHandlers {
@@ -48,6 +49,9 @@ export interface UiHandlers {
   onCopyLink(): void
   onToggleClicks(): void
   onToggleHaptics(): void
+  /** Open or close the direction scan (must run inside the click: iOS asks for compass access there). */
+  onScanToggle(): void
+  onScanClear(): void
 }
 
 // ---- Tiny DOM helpers ----------------------------------------------------------------------------
@@ -467,15 +471,19 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
   const modeChip = h('span', { class: 'chip chip-mode' }, h('span', { class: 'sr-only' }, `${H.modeLabel}: `), modeValue)
   const clicks = toggle(H.clicks, () => handlers.onToggleClicks())
   const haptics = state.caps.haptics ? toggle(H.haptics, () => handlers.onToggleHaptics()) : null
+  const direction = state.caps.compass ? toggle(H.direction, () => handlers.onScanToggle()) : null
   const topbar = h(
     'div',
     { class: 'topbar' },
     h('span', { class: 'chip chip-freq' }, h('span', { class: 'sr-only' }, `${H.frequencyLabel}: `), freqValue),
     modeChip,
     h('span', { class: 'topbar-spacer' }),
+    direction ? direction.el : null,
     clicks.el,
     haptics ? haptics.el : null,
   )
+  const radar = createRadarPanel({ onClear: () => handlers.onScanClear(), onDone: () => handlers.onScanToggle() })
+  radar.el.hidden = true
 
   // Verdict hero: the word is the assertive live region; the sub-line carries the raw dB change.
   const verdict = h('p', { class: 'verdict', 'aria-live': 'assertive', 'aria-atomic': 'true' })
@@ -524,6 +532,7 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
     topbar,
     hero,
     meterBlock,
+    radar.el,
     h('div', { class: 'info' }, countdownRow, phaseLive, history, guidance, rawBadge.el),
     h(
       'div',
@@ -556,6 +565,15 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
       setAttr(modeChip, 'data-mode', mode)
       syncToggle(clicks, state.settings.clicks)
       if (haptics) syncToggle(haptics, state.settings.haptics)
+      const scanning = state.scan.open
+      if (direction) syncToggle(direction, scanning)
+      // While scanning, the radar replaces the meter, history and guidance; the verdict and the
+      // countdown stay (the next chirp is the next radar sample).
+      setHidden(radar.el, !scanning)
+      setHidden(meterBlock, scanning)
+      setHidden(guidance, scanning)
+      setAttr(el, 'data-scanning', scanning ? '' : null)
+      if (scanning) radar.render(state.scan, mode)
 
       const m = heroModel(view, mode, cfg)
       if (m.key !== heroKey) {
@@ -615,7 +633,7 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
         setAttr(item.li, 'data-verdict', r.isNewBest ? 'best' : r.verdict)
         setAttr(item.li, 'aria-current', current ? 'true' : null)
       }
-      setHidden(history, shown === 0)
+      setHidden(history, shown === 0 || scanning)
 
       setText(guidance, view ? guidanceText(view) : GUIDANCE.default)
       syncBadge(rawBadge, state.mic)
@@ -632,6 +650,8 @@ function pausedView(needsGesture: boolean, handlers: UiHandlers): ScreenView {
     h('div', { class: 'pause-icon', 'aria-hidden': 'true' }, h('span'), h('span')),
     title,
     resume ?? h('p', { class: 'muted', role: 'status' }, P.resuming),
+    // A way out when resuming keeps failing (e.g. the microphone stays taken by a phone call).
+    h('div', { class: 'actions' }, button(P.stop, () => handlers.onStopRequest(), 'secondary')),
   )
   return { el, focus: resume ?? title, update() {} }
 }

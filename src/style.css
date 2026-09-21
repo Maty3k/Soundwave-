@@ -1052,6 +1052,121 @@ h1[tabindex='-1']:focus {
   min-height: 64px;
 }
 
+/* ---- Direction scan (radar) ----------------------------------------------------------------- */
+
+.scan {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  padding: 14px 16px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.scan__title,
+.scan__how {
+  justify-self: start;
+}
+
+.scan__title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.scan__how {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.scan__radar {
+  width: min(100%, 300px);
+  height: auto;
+  aspect-ratio: 240 / 248;
+  overflow: visible;
+}
+
+.scan__rings circle {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.scan__rings circle:last-child {
+  stroke: var(--muted);
+  stroke-opacity: 0.5;
+}
+
+.scan__sector {
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+
+.scan__sector--empty {
+  fill: none;
+  stroke: var(--line);
+  stroke-dasharray: 3 4;
+}
+
+.scan__suggest line {
+  stroke: var(--muted);
+  stroke-width: 2;
+  stroke-dasharray: 4 5;
+}
+
+.scan__arrow-halo {
+  stroke: var(--bg);
+  stroke-width: 11;
+  stroke-linecap: round;
+}
+
+.scan__arrow-shaft {
+  stroke: var(--text);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.scan__arrow-head {
+  fill: var(--text);
+  stroke: var(--bg);
+  stroke-width: 3;
+  stroke-linejoin: round;
+  paint-order: stroke;
+}
+
+.scan__forward path,
+.scan__you {
+  fill: var(--text);
+}
+
+.scan__status {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.scan[data-quality='clear'] .scan__status {
+  color: var(--accent);
+}
+
+.scan__detail {
+  margin: 0;
+  color: var(--muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.scan__actions {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+
+.scan__actions .btn {
+  flex: 1;
+}
+
 @media (min-width: 560px) {
   .scrim {
     place-items: center;

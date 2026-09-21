@@ -381,12 +381,11 @@ describe('detectStep: fast lock', () => {
     expect(Math.abs(c.peakDb - median(levels))).toBeLessThan(1)
   })
 
-  // KNOWN SPEC GAP (reported): with fftSize 4096 a 20 ms tone is 7-10 bins wide at -10 dB in every
-  // frame that contains it (its own bandwidth is about 1 / 20 ms = 50 Hz, and the frames where it
-  // sits at the window's tapered ends are wider still), so no frame passes maxWidthBins = 4 and no
-  // sighting forms. The next test pins down that diagnosis; the shortest chirps that lock reliably
-  // are about 80 ms (the test after it). `it.fails` keeps the spec's assertion: it starts failing
-  // loudly once the behaviour is fixed.
+  // KNOWN LIMIT: a 20 ms tone is spectrally wide (its own bandwidth is about 1 / 20 ms = 50 Hz, and
+  // frames where it sits at the window's tapered ends are wider still), so even the relaxed width
+  // rule (-6 dB, 5 bins) rejects it and no sighting forms. The next test pins down that diagnosis.
+  // Chirps of 40 ms and longer lock reliably (see 'locks on most 40-50 ms chirps'). `it.fails`
+  // keeps the original assertion: it starts failing loudly if 20 ms chirps ever lock.
   it.fails('locks on a 20 ms chirp at 35 dB SNR (apparent duration >= persistSpanMs)', () => {
     const frames = sceneFrames({ durationS: 1.2, seed: 23, tones: [chirp(3120, 35, 0.5, 20)] })
     const { lock } = runDetector(frames)
@@ -411,6 +410,20 @@ describe('detectStep: fast lock', () => {
     expect(Math.max(...visible.map((v) => v.snrDb))).toBeGreaterThanOrEqual(CONFIG.fastLockSnrDb)
     // ... but the width test rejects every frame.
     for (const v of visible) expect(v.widthBins).toBeGreaterThan(CONFIG.maxWidthBins)
+  })
+
+  it('locks on most 40-50 ms chirps at 30 dB SNR (relaxed -6 dB / 5-bin width rule)', () => {
+    let locks = 0
+    let total = 0
+    for (const ms of [40, 50]) {
+      for (const seed of [31, 32, 33, 34, 35]) {
+        const on = 0.5 + seed * 0.0037 // vary the chirp's phase against the frame grid
+        const frames = sceneFrames({ durationS: 1.2, seed, tones: [chirp(3100 + seed, 30, on, ms)] })
+        total++
+        if (runDetector(frames).lock?.reason === 'fast') locks++
+      }
+    }
+    expect(locks / total).toBeGreaterThanOrEqual(0.8)
   })
 
   it('locks on an 80 ms chirp at 25 dB SNR', () => {

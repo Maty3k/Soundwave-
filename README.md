@@ -2,7 +2,7 @@
 
 **Follow the beep.**
 
-Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, so Soundwave does not point an arrow. It plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around.
+Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, and a single microphone cannot hear direction, so Soundwave plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around. On phones, a direction scan adds a radar that uses your body as a shield to show the loudest side.
 
 Everything runs in your browser. Audio is analysed live and never recorded, stored or uploaded, and the page makes no network requests after it has loaded.
 
@@ -14,7 +14,16 @@ Everything runs in your browser. Audio is analysed live and never recorded, stor
 4. Move 2–3 m and wait again. A countdown shows when the next chirp is due and asks you to hold still for the last few seconds.
 5. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen.
 
-Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means you are probably within arm's reach. Smoke detectors live on ceilings.
+Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means the microphone is overloaded: you are probably within arm's reach. Smoke detectors live on ceilings.
+
+### Direction scan (phones with a compass)
+
+A single microphone cannot hear direction, so Soundwave uses your body as a shield instead. Tap **Direction** on the hunting screen, hold the phone flat in front of your chest with the top pointing away from you, and stay on the spot:
+
+- **Chirps:** after each chirp, turn a quarter turn. After three or four chirps the radar shows an arrow toward the loudest side.
+- **Continuous tones:** turn slowly, one full turn in about 20 seconds.
+
+The radar is drawn from the phone's point of view: up is where the phone points, so the arrow keeps pointing the right way as you turn. Your body makes sound from behind a few dB quieter. Close to the source the difference is large and the arrow points at it. From another room it usually points at the doorway the sound comes through, which is still the way to go. "No clear direction" means the sound reaches you equally from everywhere: move toward the warmest room and scan again. Laptops have no compass, so the button only appears on touch devices.
 
 ## Browser support
 
@@ -23,7 +32,7 @@ Continuous tones and rapid beep trains switch to a live meter automatically. Roo
 | Chrome on Android | Primary target, including vibration |
 | Chrome, Edge, Firefox on desktop | Supported |
 | Safari on macOS | Supported, but Safari cannot switch off automatic gain control or noise suppression, so readings are less precise. The app shows a notice. Not tested yet. |
-| Safari on iPhone | Best effort: no vibration, and listening pauses when you switch apps |
+| Safari on iPhone | Best effort: no vibration, listening pauses when you switch apps, and the direction scan asks for motion access |
 
 The microphone only works in a secure context: `https://…` or a `localhost` address.
 
@@ -79,6 +88,11 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 - `?debug` shows a diagnostics panel: microphone settings, sample rates, locked frequency, live level, noise floor, SNR and the last chirps.
 - `?warmth=1` forces the maximum click rate while hunting. It is used to check that the app's own clicks do not register as chirps.
 
+### Known limits
+
+- Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
+- The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
+
 ### Tuning
 
 Every threshold lives in `src/config.ts` and every user-facing string in `src/copy.ts`. The signal-processing thresholds were calibrated against two hours of synthetic noise through a reference copy of the browser's analyser (`src/dsp/synth.ts`). Field tuning with a real detector should change only those two files; the unit tests import their thresholds from the config.
@@ -94,8 +108,10 @@ src/
   copy.ts          all user-facing text
   ui.ts, style.css DOM rendering and styles
   platform.ts      capabilities, wake lock, haptics, settings storage
+  orientation.ts   compass heading for the direction scan
+  radarUi.ts       direction-scan radar panel
   audio/           microphone, analyser loop, Geiger clicker (browser code)
-  dsp/             pure signal processing: spectrum, detection, hunting, click maths, test harness
+  dsp/             pure signal processing: spectrum, detection, hunting, click maths, radar, test harness
 tools/make-chirp-wav.mjs   test-signal generator
 docs/PLAN.md               design plan and decisions
 ```

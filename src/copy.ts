@@ -12,10 +12,14 @@ import type {
   ErrorCode,
   HuntView,
   Lock,
+  LockMode,
   MicDiag,
+  RadarView,
   Reading,
+  ScanState,
   Verdict,
 } from './types.ts'
+import { direction8, relativeBearing, type Direction8 } from './dsp/radar.ts'
 
 /** Real minus sign (U+2212) used by every signed number on the main screens. */
 export const MINUS = '\u2212'
@@ -70,6 +74,7 @@ export const COPY = {
     modeLabel: 'Mode',
     clicks: 'Clicks',
     haptics: 'Haptics',
+    direction: 'Direction',
     on: 'On',
     off: 'Off',
     waiting: 'LISTENING',
@@ -90,6 +95,7 @@ export const COPY = {
     title: 'Paused. Soundwave was in the background.',
     resume: 'Tap to resume listening',
     resuming: 'Resuming…',
+    stop: 'Stop',
   },
   stopConfirm: {
     title: 'Stop hunting? Your best-so-far will be lost.',
@@ -355,6 +361,110 @@ export function guidanceText(view: HuntView): string {
   if (last.verdict === 'warmer' && prev?.verdict === 'warmer') return GUIDANCE.warmerTwice
   if (last.verdict === 'same' && prev?.verdict === 'same') return GUIDANCE.sameTwice
   return GUIDANCE.default
+}
+
+// ---- Direction scan (radar) ----------------------------------------------------------------------
+
+/** Static strings of the direction scan panel. */
+export const RADAR_COPY = {
+  title: 'Direction scan',
+  howChirp:
+    'Hold the phone flat in front of your chest, top pointing away from you. Stay on the spot. After each chirp, turn a quarter turn.',
+  howLive:
+    'Hold the phone flat in front of your chest, top pointing away from you. Stay on the spot and turn slowly, one full turn in about 20 seconds.',
+  clear: 'Clear scan',
+  done: 'Done',
+  starting: 'Waiting for the compass…',
+  unavailable: "This device has no compass, so the direction scan can't run here. Use a phone.",
+  denied: 'Motion and orientation access was blocked. Allow it in the browser settings to use the direction scan.',
+  firstChirp: 'Stand still and wait for the next chirp.',
+  firstLive: 'Turn slowly on the spot.',
+  keepTurning: 'Keep turning slowly on the spot.',
+  unclear: 'No clear direction. The sound may be bouncing around you. Move toward the warmest room and scan again.',
+  ariaNoDirection: 'Radar: no direction yet',
+  ariaLoudest: 'Radar: loudest',
+  directions: {
+    ahead: 'straight ahead',
+    aheadRight: 'ahead to the right',
+    right: 'to your right',
+    behindRight: 'behind you to the right',
+    behind: 'behind you',
+    behindLeft: 'behind you to the left',
+    left: 'to your left',
+    aheadLeft: 'ahead to the left',
+  } satisfies Record<Direction8, string>,
+} as const
+
+function measuredSectors(radar: RadarView): number {
+  let n = 0
+  for (const s of radar.sectors) if (s.samples > 0) n++
+  return n
+}
+
+/** Where the loudest direction is, in words, relative to where the phone points now. */
+function loudestWords(radar: RadarView): string {
+  if (radar.bearingDeg === null || radar.headingDeg === null) return 'toward the arrow'
+  return RADAR_COPY.directions[direction8(relativeBearing(radar.bearingDeg, radar.headingDeg))]
+}
+
+/**
+ * Main status line of the scan panel: compass problems, what to do next, or the answer.
+ * 'rough' hedges ("Probably ..."); 'clear' states it; 'unclear' explains why there is no answer.
+ */
+export function radarStatusText(scan: ScanState, mode: LockMode): string {
+  switch (scan.status) {
+    case 'off':
+      return ''
+    case 'starting':
+      return RADAR_COPY.starting
+    case 'unavailable':
+      return RADAR_COPY.unavailable
+    case 'denied':
+      return RADAR_COPY.denied
+    case 'active':
+      break
+  }
+  const radar = scan.radar
+  if (radar === null || radar.samples === 0) return mode === 'chirp' ? RADAR_COPY.firstChirp : RADAR_COPY.firstLive
+  switch (radar.quality) {
+    case 'needMore': {
+      if (mode === 'live') return RADAR_COPY.keepTurning
+      const n = measuredSectors(radar)
+      return `${n} ${n === 1 ? 'direction' : 'directions'} measured. Turn a quarter turn before the next chirp.`
+    }
+    case 'unclear':
+      return RADAR_COPY.unclear
+    case 'rough':
+      return `Probably ${loudestWords(radar)}. Measure a few more directions to be sure.`
+    case 'clear':
+      return `Loudest ${loudestWords(radar)}.`
+  }
+}
+
+/** '40° left', '90° right', 'straight ahead' or 'turn around' for a relative angle. */
+function turnWords(relDeg: number): string {
+  const a = Math.round(Math.abs(relDeg))
+  if (a < 10) return 'straight ahead'
+  if (a > 165) return 'turn around'
+  return `${a}° ${relDeg < 0 ? 'left' : 'right'}`
+}
+
+/**
+ * Detail line: the angle and strength of the answer, or where to face next while directions are
+ * missing. Empty when there is nothing useful to add (no compass heading yet).
+ */
+export function radarDirectionText(radar: RadarView): string {
+  if (radar.headingDeg === null) return ''
+  if (radar.bearingDeg !== null) {
+    const turn = turnWords(relativeBearing(radar.bearingDeg, radar.headingDeg))
+    const strength = radar.contrastDb === null ? '' : ` · ${Math.round(radar.contrastDb)} dB louder than the quietest side`
+    return `${turn === 'straight ahead' ? 'Straight ahead' : `About ${turn}`}${strength}`
+  }
+  if (radar.suggestDeg !== null && radar.quality === 'needMore') {
+    const turn = turnWords(relativeBearing(radar.suggestDeg, radar.headingDeg))
+    return turn === 'straight ahead' ? 'Next: keep facing this way for the next reading.' : `Next: face the empty side, ${turn === 'turn around' ? 'behind you' : `about ${turn}`}.`
+  }
+  return ''
 }
 
 // ---- Debug readout -------------------------------------------------------------------------------

@@ -7,10 +7,12 @@
  * (performance.now() in the app); events that carry nowMs also advance state.nowMs.
  */
 import type { Config } from './config.ts'
-import type { AppEvent, AppState, Capabilities, PausedFrom, Screen, Settings } from './types.ts'
+import type { AppEvent, AppState, Capabilities, PausedFrom, ScanState, Screen, Settings } from './types.ts'
 
 const IDLE: Screen = Object.freeze({ kind: 'idle' })
 const HUNTING: Screen = Object.freeze({ kind: 'hunting' })
+/** Direction scan closed (the only scan state outside the hunting screen). */
+export const SCAN_CLOSED: ScanState = Object.freeze({ open: false, status: 'off', radar: null })
 
 /** Fresh state on the landing screen: mic level 0, no mic, lock, hunt, toast or pending dialogs. */
 export function initialState(caps: Capabilities, settings: Settings, debug: boolean, nowMs: number): AppState {
@@ -27,12 +29,13 @@ export function initialState(caps: Capabilities, settings: Settings, debug: bool
     confirmStop: false,
     wakeLockFailed: false,
     debug,
+    scan: SCAN_CLOSED,
   }
 }
 
 /** Back to the landing screen, dropping the session (mic, lock, hunt) but keeping settings and toast. */
 function toIdle(state: AppState): AppState {
-  return { ...state, screen: IDLE, mic: null, micLevel: 0, lock: null, hunt: null, confirmStop: false }
+  return { ...state, screen: IDLE, mic: null, micLevel: 0, lock: null, hunt: null, confirmStop: false, scan: SCAN_CLOSED }
 }
 
 /** Where a paused session came from; the locked banner is skipped on return (it resumes as hunting). */
@@ -124,6 +127,7 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
         lock: null,
         hunt: null,
         confirmStop: false,
+        scan: SCAN_CLOSED,
       }
 
     case 'resetBest':
@@ -140,6 +144,7 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
         case 'requesting': // the Cancel button while the permission prompt is open
         case 'listening':
         case 'locked':
+        case 'paused': // the way out when resuming keeps failing (e.g. iOS 'interrupted' during a call)
           return toIdle(state)
         default:
           return state
@@ -211,6 +216,21 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
 
     case 'wakeLockFailed':
       return state.wakeLockFailed ? state : { ...state, wakeLockFailed: true }
+
+    case 'scanOpen':
+      if (screen.kind !== 'hunting' || !state.caps.compass || state.scan.open) return state
+      return { ...state, scan: { open: true, status: 'starting', radar: null } }
+
+    case 'scanStatus':
+      if (!state.scan.open || state.scan.status === event.status) return state
+      return { ...state, scan: { ...state.scan, status: event.status } }
+
+    case 'radar':
+      if (!state.scan.open || state.scan.radar === event.view) return state
+      return { ...state, scan: { ...state.scan, radar: event.view } }
+
+    case 'scanClose':
+      return state.scan.open ? { ...state, scan: SCAN_CLOSED } : state
 
     default:
       // Unknown event (only possible from untyped callers): leave the state alone.

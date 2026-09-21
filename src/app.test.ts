@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createStore, initialState, reduce } from './app.ts'
+import { createStore, initialState, reduce, SCAN_CLOSED } from './app.ts'
 import { CONFIG, withConfig } from './config.ts'
 import type {
   AppEvent,
@@ -8,6 +8,7 @@ import type {
   HuntView,
   Lock,
   MicDiag,
+  RadarView,
   Reading,
   Screen,
   Settings,
@@ -15,7 +16,7 @@ import type {
 
 // ---- Hand-built fixtures -------------------------------------------------------------------------
 
-const CAPS: Capabilities = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: true, haptics: false }
+const CAPS: Capabilities = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: true, haptics: false, compass: true }
 const SETTINGS: Settings = { clicks: true, haptics: true }
 const T0 = 1_000
 const NOW = 50_000
@@ -287,8 +288,8 @@ const APPLIES: ReadonlyArray<readonly [string, AppState, readonly string[]]> = [
   ['hunting', on(S.hunting), ['hunt', 'relisten', 'stopRequest', 'hidden', 'micLost']],
   ['hunting, confirm open', on(S.hunting, { hunt: HUNT_AT, confirmStop: true }),
     ['hunt', 'relisten', 'stopConfirm', 'stopCancel', 'hidden', 'micLost']],
-  ['paused', on(S.pausedHunting), ['micError', 'visible:healthy', 'visible:unhealthy', 'micLost', 'resumed']],
-  ['paused, needs gesture', on(S.pausedGesture), ['micError', 'visible:healthy', 'resumed']],
+  ['paused', on(S.pausedHunting), ['micError', 'visible:healthy', 'visible:unhealthy', 'micLost', 'resumed', 'stopRequest']],
+  ['paused, needs gesture', on(S.pausedGesture), ['micError', 'visible:healthy', 'resumed', 'stopRequest']],
   ['error', on(S.error), ['retry', 'back']],
 ]
 
@@ -498,6 +499,84 @@ describe('reduce: an open stop confirmation survives a pause', () => {
 })
 
 // ---- Store ---------------------------------------------------------------------------------------
+
+describe('reduce: paused screen way out', () => {
+  it('stopRequest on a paused screen (either kind) returns to idle and drops the session', () => {
+    for (const screen of [S.pausedHunting, S.pausedGesture, S.pausedListening]) {
+      const next = reduce(on(screen), { type: 'stopRequest' }, CONFIG)
+      expect(next.screen).toEqual({ kind: 'idle' })
+      expect(next.mic).toBeNull()
+      expect(next.hunt).toBeNull()
+      expect(next.scan).toBe(SCAN_CLOSED)
+    }
+  })
+})
+
+describe('reduce: direction scan', () => {
+  const RADAR: RadarView = {
+    mode: 'chirp',
+    sectors: [],
+    bearingDeg: null,
+    contrastDb: null,
+    quality: 'needMore',
+    samples: 0,
+    maxGapDeg: null,
+    suggestDeg: null,
+    headingDeg: 12,
+  }
+  const OPEN = { open: true, status: 'active', radar: RADAR } as const
+
+  it('starts closed', () => {
+    expect(BASE.scan).toBe(SCAN_CLOSED)
+    expect(SCAN_CLOSED).toEqual({ open: false, status: 'off', radar: null })
+  })
+
+  it('scanOpen only on the hunting screen with a compass, and only once', () => {
+    const opened = reduce(on(S.hunting), { type: 'scanOpen' }, CONFIG)
+    expect(opened.scan).toEqual({ open: true, status: 'starting', radar: null })
+    expect(reduce(opened, { type: 'scanOpen' }, CONFIG)).toBe(opened)
+    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'scanOpen' }, CONFIG)).toBe(s)
+    }
+    const noCompass = on(S.hunting, { caps: { ...CAPS, compass: false } })
+    expect(reduce(noCompass, { type: 'scanOpen' }, CONFIG)).toBe(noCompass)
+  })
+
+  it('scanStatus and radar update an open scan and are ignored when closed', () => {
+    const opened = reduce(on(S.hunting), { type: 'scanOpen' }, CONFIG)
+    const active = reduce(opened, { type: 'scanStatus', status: 'active' }, CONFIG)
+    expect(active.scan.status).toBe('active')
+    expect(reduce(active, { type: 'scanStatus', status: 'active' }, CONFIG)).toBe(active)
+    const withRadar = reduce(active, { type: 'radar', view: RADAR }, CONFIG)
+    expect(withRadar.scan.radar).toBe(RADAR)
+    expect(reduce(withRadar, { type: 'radar', view: RADAR }, CONFIG)).toBe(withRadar)
+    const unavailable = reduce(opened, { type: 'scanStatus', status: 'unavailable' }, CONFIG)
+    expect(unavailable.scan).toEqual({ open: true, status: 'unavailable', radar: null })
+
+    const closed = on(S.hunting)
+    expect(reduce(closed, { type: 'scanStatus', status: 'active' }, CONFIG)).toBe(closed)
+    expect(reduce(closed, { type: 'radar', view: RADAR }, CONFIG)).toBe(closed)
+  })
+
+  it('scanClose closes an open scan; closing a closed scan is a no-op', () => {
+    const s = on(S.hunting, { scan: OPEN })
+    expect(reduce(s, { type: 'scanClose' }, CONFIG).scan).toBe(SCAN_CLOSED)
+    const closed = on(S.hunting)
+    expect(reduce(closed, { type: 'scanClose' }, CONFIG)).toBe(closed)
+  })
+
+  it('leaving the hunt closes the scan; a pause keeps it', () => {
+    const s = on(S.hunting, { scan: OPEN })
+    expect(reduce(s, { type: 'relisten', nowMs: T1 }, CONFIG).scan).toBe(SCAN_CLOSED)
+    expect(reduce(s, { type: 'stopRequest' }, CONFIG).scan).toBe(SCAN_CLOSED)
+    expect(reduce(s, { type: 'hidden' }, CONFIG).scan).toBe(OPEN)
+    const confirm = on(S.hunting, { scan: OPEN, hunt: HUNT_AT })
+    const asked = reduce(confirm, { type: 'stopRequest' }, CONFIG)
+    expect(asked.scan).toBe(OPEN)
+    expect(reduce(asked, { type: 'stopConfirm' }, CONFIG).scan).toBe(SCAN_CLOSED)
+  })
+})
 
 describe('createStore', () => {
   it('notifies subscribers with (state, prev) only when the state object changed', () => {

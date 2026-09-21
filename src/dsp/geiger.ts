@@ -61,30 +61,49 @@ function harmonicDistanceHz(carrierHz: number, f0Hz: number, harmonics: number):
 }
 
 /**
- * Click carrier frequency in Hz for a locked f0: the first entry of clickCarriersHz whose
- * harmonics 1..clickHarmonics all lie at least minClearanceHz from f0, which keeps the click's
- * main lobe (and that of its loudspeaker distortion products) out of the measured band. If no
- * carrier qualifies, the one whose nearest harmonic is farthest from f0 (first such entry on a tie).
- * Limitation: sidelobes are not cleared. With the default carriers a carrier fundamental 400 to
- * about 1000 Hz from f0 (f0 1.5-2.2 kHz) leaks up to about +10 dB into a quiet band; see the
- * KNOWN ISSUE test in geiger.test.ts.
+ * True when a carrier keeps the click out of the band measured at f0: every harmonic
+ * 1..clickHarmonics at least minClearanceHz away (clears the main lobe of the click and of its
+ * loudspeaker distortion products) and the fundamental at least clickMinCarrierDistanceHz away
+ * (clears the fundamental's sidelobes, which are loud enough to matter).
+ */
+export function carrierQualifies(carrierHz: number, f0Hz: number, cfg: Config): boolean {
+  return (
+    harmonicDistanceHz(carrierHz, f0Hz, cfg.clickHarmonics) >= minClearanceHz(cfg) &&
+    Math.abs(carrierHz - f0Hz) >= cfg.clickMinCarrierDistanceHz
+  )
+}
+
+/**
+ * Click carrier frequency in Hz for a locked f0: the first entry of clickCarriersHz that
+ * qualifies (carrierQualifies). If none does, the one whose nearest harmonic is farthest from f0
+ * (first such entry on a tie). With the default carriers every f0 in the search band has a
+ * qualifying carrier and the band rises by less than 1 dB (see geiger.test.ts).
  * Throws a RangeError when clickCarriersHz is empty.
  */
 export function chooseClickFreq(f0Hz: number, cfg: Config): number {
   const carriers = cfg.clickCarriersHz
-  const clear = minClearanceHz(cfg)
   let bestHz = carriers[0]
   if (bestHz === undefined) throw new RangeError('config.clickCarriersHz is empty')
   let bestDist = Number.NEGATIVE_INFINITY
   for (const c of carriers) {
+    if (carrierQualifies(c, f0Hz, cfg)) return c
     const d = harmonicDistanceHz(c, f0Hz, cfg.clickHarmonics)
-    if (d >= clear) return c
     if (d > bestDist) {
       bestDist = d
       bestHz = c
     }
   }
   return bestHz
+}
+
+/**
+ * Like chooseClickFreq, but keeps currentHz while it still qualifies for the new f0. The locked
+ * frequency drifts by a few Hz per chirp (EMA); without this the click pitch could flip between
+ * two carriers whenever f0 sits on a clearance edge.
+ */
+export function chooseClickFreqSticky(f0Hz: number, currentHz: number | null, cfg: Config): number {
+  if (currentHz !== null && carrierQualifies(currentHz, f0Hz, cfg)) return currentHz
+  return chooseClickFreq(f0Hz, cfg)
 }
 
 /**

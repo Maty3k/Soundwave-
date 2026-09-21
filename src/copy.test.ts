@@ -21,8 +21,11 @@ import {
   NO_VALUE,
   rawAudioText,
   verdictLabel,
+  RADAR_COPY,
+  radarDirectionText,
+  radarStatusText,
 } from './copy.ts'
-import type { Countdown, HuntView, LiveView, Lock, MicDiag, Reading, Verdict } from './types.ts'
+import type { Countdown, HuntView, LiveView, Lock, MicDiag, RadarView, Reading, ScanState, Verdict } from './types.ts'
 
 // ---- Fixtures ------------------------------------------------------------------------------------
 
@@ -276,6 +279,73 @@ describe('guidanceText', () => {
 
 // ---- Static copy and debug -----------------------------------------------------------------------
 
+describe('direction scan text', () => {
+  const view = (patch: Partial<RadarView>): RadarView => ({
+    mode: 'chirp',
+    sectors: Array.from({ length: 8 }, (_, i) => ({ centerDeg: i * 45, levelDb: null, samples: 0 })),
+    bearingDeg: null,
+    contrastDb: null,
+    quality: 'needMore',
+    samples: 0,
+    maxGapDeg: null,
+    suggestDeg: null,
+    headingDeg: 0,
+    ...patch,
+  })
+  const measured = (n: number) =>
+    Array.from({ length: 8 }, (_, i) => ({ centerDeg: i * 45, levelDb: i < n ? -50 : null, samples: i < n ? 1 : 0 }))
+  const scan = (status: ScanState['status'], radar: RadarView | null = null): ScanState => ({ open: true, status, radar })
+
+  it('explains compass problems and the first step', () => {
+    expect(radarStatusText(scan('starting'), 'chirp')).toBe(RADAR_COPY.starting)
+    expect(radarStatusText(scan('unavailable'), 'chirp')).toBe(RADAR_COPY.unavailable)
+    expect(radarStatusText(scan('denied'), 'live')).toBe(RADAR_COPY.denied)
+    expect(radarStatusText({ open: false, status: 'off', radar: null }, 'chirp')).toBe('')
+    expect(radarStatusText(scan('active'), 'chirp')).toBe(RADAR_COPY.firstChirp)
+    expect(radarStatusText(scan('active', view({})), 'live')).toBe(RADAR_COPY.firstLive)
+  })
+
+  it('counts measured directions and asks for a quarter turn (chirp mode)', () => {
+    expect(radarStatusText(scan('active', view({ samples: 1, sectors: measured(1) })), 'chirp')).toBe(
+      '1 direction measured. Turn a quarter turn before the next chirp.',
+    )
+    expect(radarStatusText(scan('active', view({ samples: 2, sectors: measured(2) })), 'chirp')).toBe(
+      '2 directions measured. Turn a quarter turn before the next chirp.',
+    )
+    expect(radarStatusText(scan('active', view({ mode: 'live', samples: 30, sectors: measured(2) })), 'live')).toBe(
+      RADAR_COPY.keepTurning,
+    )
+  })
+
+  it('states, hedges or declines an answer depending on quality, relative to where the phone points', () => {
+    const answer = { samples: 4, sectors: measured(4), bearingDeg: 90, contrastDb: 12.4 }
+    expect(radarStatusText(scan('active', view({ ...answer, quality: 'clear' })), 'chirp')).toBe('Loudest to your right.')
+    expect(radarStatusText(scan('active', view({ ...answer, quality: 'rough' })), 'chirp')).toBe(
+      'Probably to your right. Measure a few more directions to be sure.',
+    )
+    expect(radarStatusText(scan('active', view({ ...answer, quality: 'clear', headingDeg: 180 })), 'chirp')).toBe(
+      'Loudest to your left.',
+    )
+    expect(radarStatusText(scan('active', view({ samples: 4, sectors: measured(4), quality: 'unclear' })), 'chirp')).toBe(
+      RADAR_COPY.unclear,
+    )
+  })
+
+  it('detail line: angle and strength, or where to face next', () => {
+    expect(radarDirectionText(view({ bearingDeg: 320, headingDeg: 0, contrastDb: 12.4, quality: 'clear' }))).toBe(
+      'About 40° left · 12 dB louder than the quietest side',
+    )
+    expect(radarDirectionText(view({ bearingDeg: 5, headingDeg: 0, contrastDb: 9, quality: 'clear' }))).toBe(
+      'Straight ahead · 9 dB louder than the quietest side',
+    )
+    expect(radarDirectionText(view({ suggestDeg: 90, headingDeg: 0 }))).toBe('Next: face the empty side, about 90° right.')
+    expect(radarDirectionText(view({ suggestDeg: 180, headingDeg: 0 }))).toBe('Next: face the empty side, behind you.')
+    expect(radarDirectionText(view({ suggestDeg: 2, headingDeg: 0 }))).toBe('Next: keep facing this way for the next reading.')
+    expect(radarDirectionText(view({ headingDeg: null, bearingDeg: 90, quality: 'clear' }))).toBe('')
+    expect(radarDirectionText(view({ quality: 'unclear', suggestDeg: 90 }))).toBe('')
+  })
+})
+
 describe('static copy', () => {
   it('has the agreed tagline, start button and error actions', () => {
     expect(COPY.tagline).toBe('Follow the beep.')
@@ -288,7 +358,7 @@ describe('static copy', () => {
 })
 
 describe('debugText', () => {
-  const caps = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: false, haptics: false }
+  const caps = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: false, haptics: false, compass: false }
   const BLANK = initialState(caps, { clicks: true, haptics: false }, true, 0)
 
   it('lists the mic diagnostics, measurements and last chirps', () => {

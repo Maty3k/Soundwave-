@@ -183,6 +183,7 @@ describe('detectCapabilities', () => {
       audioContext: false,
       wakeLock: false,
       haptics: false,
+      compass: false,
     })
   })
 
@@ -195,13 +196,25 @@ describe('detectCapabilities', () => {
       vibrate: () => true,
       maxTouchPoints: 5,
     })
+    vi.stubGlobal('window', { DeviceOrientationEvent: class {} })
     expect(detectCapabilities()).toEqual({
       secureContext: true,
       getUserMedia: true,
       audioContext: true,
       wakeLock: true,
       haptics: true,
+      compass: true,
     })
+  })
+
+  it('offers the compass only on a touch device with the DeviceOrientation API', () => {
+    vi.stubGlobal('window', { DeviceOrientationEvent: class {} })
+    vi.stubGlobal('navigator', { maxTouchPoints: 0 })
+    expect(detectCapabilities().compass).toBe(false) // desktop: the API exists but never fires
+    vi.stubGlobal('navigator', { maxTouchPoints: 5 })
+    expect(detectCapabilities().compass).toBe(true)
+    vi.stubGlobal('window', {})
+    expect(detectCapabilities().compass).toBe(false)
   })
 
   it('needs a touch screen for haptics and accepts the legacy webkitAudioContext', () => {

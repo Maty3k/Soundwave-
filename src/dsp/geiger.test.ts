@@ -3,7 +3,9 @@ import { CONFIG, withConfig } from '../config.ts'
 import type { Config } from '../config.ts'
 import type { Frame } from '../types.ts'
 import {
+  carrierQualifies,
   chooseClickFreq,
+  chooseClickFreqSticky,
   CLICK_CURVE_POINTS,
   clickRateHz,
   dbToGain,
@@ -32,7 +34,10 @@ function nearestHarmonicHz(carrierHz: number, f0Hz: number, cfg: Config): number
 }
 
 function clears(carrierHz: number, f0Hz: number, cfg: Config): boolean {
-  return nearestHarmonicHz(carrierHz, f0Hz, cfg) >= 2 / (cfg.clickMs / 1000)
+  return (
+    nearestHarmonicHz(carrierHz, f0Hz, cfg) >= 2 / (cfg.clickMs / 1000) &&
+    Math.abs(carrierHz - f0Hz) >= cfg.clickMinCarrierDistanceHz
+  )
 }
 
 /**
@@ -198,6 +203,40 @@ describe('nextClickDelayS', () => {
   })
 })
 
+describe('chooseClickFreqSticky', () => {
+  it('keeps the current carrier while it still qualifies, even where the plain choice would differ', () => {
+    // Find an f0 where the first qualifying carrier differs from a still-qualifying current one.
+    const [lo, hi] = CONFIG.searchBandHz
+    let checked = 0
+    for (let f0 = lo; f0 <= hi; f0 += 5) {
+      const plain = chooseClickFreq(f0, CONFIG)
+      for (const current of CONFIG.clickCarriersHz) {
+        if (current === plain || !carrierQualifies(current, f0, CONFIG)) continue
+        expect(chooseClickFreqSticky(f0, current, CONFIG)).toBe(current)
+        checked++
+      }
+    }
+    expect(checked).toBeGreaterThan(0)
+  })
+
+  it('switches when the current carrier stops qualifying, and chooses normally without one', () => {
+    for (const f0 of [1600, 2400, 3100, 4500]) {
+      expect(chooseClickFreqSticky(f0, null, CONFIG)).toBe(chooseClickFreq(f0, CONFIG))
+      const bad = CONFIG.clickCarriersHz.find((c) => !carrierQualifies(c, f0, CONFIG))
+      if (bad !== undefined) expect(chooseClickFreqSticky(f0, bad, CONFIG)).toBe(chooseClickFreq(f0, CONFIG))
+    }
+  })
+
+  it('carrierQualifies requires both the harmonic clearance and the fundamental distance', () => {
+    const f0 = 2000
+    // 1100 Hz: harmonics 1100, 2200 (200 Hz away) -> fails the harmonic clearance.
+    expect(carrierQualifies(1100, f0, CONFIG)).toBe(false)
+    // 1500 Hz: nearest harmonic 1500 (500 Hz away, clears 400) but the fundamental is only 500 Hz away.
+    expect(carrierQualifies(1500, f0, withConfig({ clickCarriersHz: [1500] }))).toBe(false)
+    expect(carrierQualifies(1500, f0, withConfig({ clickMinCarrierDistanceHz: 400 }))).toBe(true)
+  })
+})
+
 describe('minClearanceHz', () => {
   it('is the main-lobe half-width 2 / clickLength of a Hann burst', () => {
     expect(minClearanceHz(CONFIG)).toBeCloseTo(2 / (CONFIG.clickMs / 1000), 9)
@@ -324,15 +363,12 @@ describe('click leakage into the measured band (reference analyser)', () => {
   })
 
   /**
-   * KNOWN ISSUE (reported, not fixable without changing the specified carrier rule): the plan asks
-   * for < 1 dB band rise at the chosen carrier for every f0 in the search band, but the 2 / clickLength
-   * clearance only clears the Hann main lobe. Where the chosen carrier's own fundamental lies 400 to
-   * about 1000 Hz from f0, its sidelobes (-31.5 dB first, about -41 dB second) reach the band: 105 of
-   * the 901 f0 values, all between 1500 and 2195 Hz, rise by more than 1 dB, worst about +10.6 dB at
-   * 1580 Hz with carrier 1100 Hz. Additionally requiring |carrier - f0| >= 1000 Hz removes every case
-   * with the default carriers. Once the rule is fixed this test starts failing: turn it into `it`.
+   * The plan's rule: clicks at the chosen carrier raise the band at f0 by less than 1 dB, for every
+   * f0 in the search band. The main-lobe clearance alone failed this for 105 of 901 f0 values
+   * (1500-2195 Hz, up to +10.6 dB) because the carrier's sidelobes reached the band;
+   * clickMinCarrierDistanceHz fixed it.
    */
-  it.fails('KNOWN ISSUE: keeps the band rise under 1 dB for every f0 in the search band', () => {
+  it('keeps the band rise under 1 dB for every f0 in the search band', () => {
     const [lo, hi] = CONFIG.searchBandHz
     const byCarrier = new Map<number, Frame[]>()
     const tooLoud: number[] = []

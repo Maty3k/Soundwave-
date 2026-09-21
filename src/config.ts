@@ -51,7 +51,13 @@ export interface Config {
   /** Peak width is measured down to max(peak - widthDropDb, floor + widthFloorMarginDb). */
   readonly widthDropDb: number
   readonly widthFloorMarginDb: number
-  /** Narrowband test: at most this many contiguous bins above the width threshold. */
+  /**
+   * Narrowband test: at most this many contiguous bins above the width threshold.
+   * A short chirp is spectrally wider than a steady tone (a 50 ms burst is about 5 bins wide at
+   * -6 dB), so the width is measured at -6 dB and allows 5 bins. Measured on synthetic chirps at
+   * 30 dB per-bin SNR: 40 ms and longer lock 9-10 times in 10, 25-30 ms about half the time; zero
+   * false locks in 30 min of noise. The earlier -10 dB / 4-bin rule only locked chirps >= 80 ms.
+   */
   readonly maxWidthBins: number
   /** At most this many candidates (strongest SNR first) are kept per frame. */
   readonly maxCandidates: number
@@ -62,7 +68,10 @@ export interface Config {
   /** A track closes after this many consecutive frames without a matching candidate. */
   readonly trackCloseMissFrames: number
   readonly maxTracks: number
-  /** A track is a valid sighting when seen in >= persistFrames frames spanning >= persistSpanMs ... */
+  /**
+   * A track is a valid sighting when seen in >= persistFrames frames spanning >= persistSpanMs ...
+   * (35 ms, a little under 2 hops, so timer jitter cannot reject a 3-frame track).
+   */
   readonly persistFrames: number
   readonly persistSpanMs: number
   /** ... with the standard deviation of its interpolated bin below this (piezos do not glide, speech does). */
@@ -178,6 +187,12 @@ export interface Config {
   /** Carrier = first entry whose harmonics 1..clickHarmonics all stay >= 2 / (clickMs / 1000) Hz from f0. */
   readonly clickCarriersHz: readonly number[]
   readonly clickHarmonics: number
+  /**
+   * The carrier's fundamental must also lie at least this far from f0. The 2 / clickLength rule
+   * only clears the click's main lobe; its sidelobes (about -31.5 and -41 dB) leaked up to +10 dB
+   * into the band for beeps at 1.5-2.2 kHz until this was added.
+   */
+  readonly clickMinCarrierDistanceHz: number
   readonly clickLookaheadS: number
   readonly clickSchedulerMs: number
   /** Extra time around a click, beyond the analysis window, during which frames are flagged as tainted. */
@@ -192,6 +207,33 @@ export interface Config {
   readonly hapticClippedPattern: readonly number[]
   /** Short pulse when a new reading is registered. */
   readonly hapticReadingPattern: readonly number[]
+
+  // ---- Direction scan (radar) ----------------------------------------------------------------
+  /**
+   * Sectors of the radar when each chirp contributes one sample (you turn between chirps).
+   * The scan works by body shadowing: held in front of the chest, the phone hears sound from
+   * behind you several dB quieter, so the loudest heading points toward the source (or toward the
+   * doorway its sound comes through).
+   */
+  readonly radarChirpSectors: number
+  /** Sectors when a continuous tone is sampled every frame while you turn slowly. */
+  readonly radarLiveSectors: number
+  /** At least this many distinct sectors must be measured before any direction is shown. */
+  readonly radarMinSectors: number
+  /** Loudest minus quietest sector below this: "no clear direction". */
+  readonly radarMinContrastDb: number
+  /** At or above this contrast (and with small gaps) the direction counts as clear. */
+  readonly radarClearContrastDb: number
+  /** Largest angular gap between measured sectors that still allows a rough / a clear answer. */
+  readonly radarRoughMaxGapDeg: number
+  readonly radarClearMaxGapDeg: number
+  /**
+   * Heading smoothing time constant: each compass reading moves the heading by 1 - exp(-dt / tau),
+   * so the result does not depend on how often the device fires orientation events.
+   */
+  readonly headingSmoothingMs: number
+  /** The scan is unavailable if no compass reading arrives within this time. */
+  readonly headingTimeoutMs: number
 
   // ---- UI ------------------------------------------------------------------------------------
   readonly noBeepHintMs: number
@@ -223,16 +265,16 @@ export const CONFIG: Config = Object.freeze({
 
   localMaxHalfBins: 3,
   candSnrDb: 12,
-  widthDropDb: 10,
+  widthDropDb: 6,
   widthFloorMarginDb: 6,
-  maxWidthBins: 4,
+  maxWidthBins: 5,
   maxCandidates: 8,
 
   trackMatchBins: 1,
   trackCloseMissFrames: 3,
   maxTracks: 6,
   persistFrames: 3,
-  persistSpanMs: 40,
+  persistSpanMs: 35,
   maxFreqStdBins: 0.5,
 
   fastLockSnrDb: 20,
@@ -291,6 +333,7 @@ export const CONFIG: Config = Object.freeze({
   clickGainDb: -18,
   clickCarriersHz: [900, 700, 1100, 500, 1300, 6000] as const,
   clickHarmonics: 6,
+  clickMinCarrierDistanceHz: 1000,
   clickLookaheadS: 0.1,
   clickSchedulerMs: 25,
   taintPadMs: 5,
@@ -305,6 +348,16 @@ export const CONFIG: Config = Object.freeze({
   ],
   hapticClippedPattern: [400, 100, 400],
   hapticReadingPattern: [60],
+
+  radarChirpSectors: 8,
+  radarLiveSectors: 24,
+  radarMinSectors: 3,
+  radarMinContrastDb: 4,
+  radarClearContrastDb: 8,
+  radarRoughMaxGapDeg: 180,
+  radarClearMaxGapDeg: 90,
+  headingSmoothingMs: 120,
+  headingTimeoutMs: 1500,
 
   noBeepHintMs: 90_000,
   lockedBannerMs: 2000,
