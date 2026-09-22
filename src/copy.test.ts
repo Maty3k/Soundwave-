@@ -63,12 +63,18 @@ import type { Comparison, ComparisonEntry, ListenerView, StationStep } from './t
 import {
   FOUND_COPY,
   formatDuration,
+  formatHuntDate,
+  HISTORY_COPY,
+  historyDetailParts,
+  historyName,
+  historyRemoveLabel,
+  historyTitle,
   foundListenersLine,
   foundListenersParts,
   foundSummaryLine,
   foundSummaryParts,
 } from './copy.ts'
-import type { FoundSummary } from './types.ts'
+import type { FoundSummary, HuntRecord } from './types.ts'
 
 // ---- Fixtures ------------------------------------------------------------------------------------
 
@@ -934,5 +940,59 @@ describe('Found it text', () => {
       'Keep hunting',
       LOG_COPY.copy,
     ])
+  })
+})
+
+// ---- Past hunts ----------------------------------------------------------------------------------
+
+describe('Past hunts text', () => {
+  const T = 1_758_000_000_000
+  const SUMMARY: FoundSummary = {
+    foundAtWallMs: T + 380_000,
+    startedAtWallMs: T,
+    f0Hz: 3100.4,
+    mode: 'chirp',
+    readings: 14,
+    bestLevelDb: -41,
+    notes: [],
+    loudestListener: null,
+    listeners: 1,
+  }
+  const record = (label: string, patch: Partial<FoundSummary> = {}): HuntRecord => ({ id: 1, label, summary: { ...SUMMARY, ...patch } })
+
+  it('says when a hunt was found in local time, with the year only when it is not this year', () => {
+    const found = new Date(2026, 8, 22, 14, 5).getTime()
+    expect(formatHuntDate(found, new Date(2026, 11, 31, 23, 0).getTime())).toBe('Tue 22 Sep, 14:05')
+    expect(formatHuntDate(new Date(2024, 11, 3, 9, 30).getTime(), found)).toBe('Tue 3 Dec 2024, 09:30')
+    expect(formatHuntDate(Number.NaN, found)).toBe('')
+  })
+
+  it('titles a hunt by its name, else by its frequency', () => {
+    expect(historyName(record('  Hallway   smoke alarm '))).toBe('Hallway smoke alarm')
+    expect(historyTitle(record('  Hallway   smoke alarm '))).toBe('Hallway smoke alarm')
+    expect(historyTitle(record('   '))).toBe('3,100 Hz beep')
+    expect(historyTitle(record('', { mode: 'live' }))).toBe('3,100 Hz tone')
+    expect(historyTitle(record('', { f0Hz: null }))).toBe('Beep')
+  })
+
+  it('lists the details, with the frequency only when the title is the name', () => {
+    expect(historyDetailParts(record('Hallway smoke alarm'))).toEqual(['3,100 Hz beep', 'found in 6 min 20 s', '14 chirps'])
+    expect(historyDetailParts(record(''))).toEqual(['found in 6 min 20 s', '14 chirps'])
+    expect(historyDetailParts(record('', { mode: 'live', readings: 3 }))).toEqual(['found in 6 min 20 s'])
+    expect(historyDetailParts(record('', { startedAtWallMs: null, readings: 1 }))).toEqual(['1 chirp'])
+  })
+
+  it('names the Remove button after the hunt', () => {
+    expect(historyRemoveLabel(record('Hallway smoke alarm'))).toBe('Remove Hallway smoke alarm from past hunts')
+    expect(historyRemoveLabel(record(''))).toBe('Remove 3,100 Hz beep from past hunts')
+  })
+
+  it('has the agreed wording', () => {
+    expect(HISTORY_COPY.title).toBe('Past hunts')
+    expect(HISTORY_COPY.nameLabel).toBe('What was it?')
+    expect(HISTORY_COPY.namePlaceholder).toBe('e.g. Hallway smoke alarm')
+    expect(HISTORY_COPY.nameHint).toBe('Saved on this device under Past hunts.')
+    expect(HISTORY_COPY.intro).toBe('Beeps you found, saved on this device only.')
+    expect(HISTORY_COPY.removed).toBe('Removed from past hunts.')
   })
 })

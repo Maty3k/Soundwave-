@@ -19,6 +19,7 @@ import type {
   ErrorCode,
   FoundNote,
   FoundSummary,
+  HuntRecord,
   Frame,
   HuntEvent,
   HuntPanel,
@@ -31,7 +32,17 @@ import type {
 } from './types.ts'
 import { createStore, initialState } from './app.ts'
 import { mountUi } from './ui.ts'
-import { LOG_COPY, logAsText, STATIONS_COPY, TEXT } from './copy.ts'
+import { HISTORY_COPY, LOG_COPY, logAsText, STATIONS_COPY, TEXT } from './copy.ts'
+import {
+  HISTORY_KEY,
+  loadHistory,
+  newRecordId,
+  recordFromSummary,
+  relabelRecord,
+  removeRecord,
+  saveHistory,
+  upsertRecord,
+} from './history.ts'
 import {
   createAudioContext,
   detectCapabilities,
@@ -105,6 +116,11 @@ const caps = detectCapabilities()
 registerServiceWorker()
 const store = createStore(initialState(caps, loadSettings(), flags.debug, now()), CONFIG)
 if (flags.debug) window.__soundwave = { state: () => store.get() }
+// Past hunts live on this device (localStorage); another tab changing them is picked up here.
+store.dispatch({ type: 'history', history: loadHistory(CONFIG) })
+window.addEventListener('storage', (e) => {
+  if (e.key === HISTORY_KEY || e.key === null) store.dispatch({ type: 'history', history: loadHistory(CONFIG) })
+})
 
 const haptics = new Haptics(CONFIG)
 haptics.setEnabled(store.get().settings.haptics && caps.haptics)
@@ -150,6 +166,8 @@ const LOG_ID_STRIDE = 100_000
 const logId = (readingId: number): number => huntSeq * LOG_ID_STRIDE + readingId
 let lastStationViewMs = 0
 let wasHolding = false
+/** The past-hunts record of the current hunt, once Found it created it (Found it again updates it). */
+let huntRecordId: number | null = null
 /** Closes the microphones after CONFIG.foundMicOffMs on the Found it screen. */
 let foundMicTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -182,6 +200,18 @@ const ui = mountUi(
       teardownIfIdle()
     },
     onNewHunt,
+    onHistoryLabel: (id, label) => {
+      const history = store.get().history
+      const next = relabelRecord(history, id, label, CONFIG)
+      if (next !== history) commitHistory(next)
+    },
+    onHistoryRemove: (id) => {
+      const history = store.get().history
+      const next = removeRecord(history, id)
+      if (next === history) return
+      commitHistory(next)
+      toast(HISTORY_COPY.removed)
+    },
     onResume: () => void resumeFromPause(),
     onBack: () => store.dispatch({ type: 'back' }),
     onReload: () => location.reload(),
@@ -334,6 +364,7 @@ function silence(s: Session): void {
 
 function teardown(): void {
   clearFoundMicOff()
+  huntRecordId = null
   stopScanSensors()
   const s = session
   session = null
@@ -378,6 +409,7 @@ function onFrame(raw: Frame): void {
 function onLock(s: Session, lock: Lock, tMs: number): void {
   s.detector = null
   huntSeq++
+  huntRecordId = null
   s.hunt = createHunt(lock, CONFIG)
   s.carrierHz = chooseClickFreqSticky(lock.f0Hz, null, CONFIG)
   s.clicker.setCarrier(s.carrierHz)
@@ -550,13 +582,25 @@ function onFound(): void {
   const st = store.get()
   if (!s || st.screen.kind !== 'hunting') return
   const summary = foundSummary(s, st)
+  // Saved under Past hunts right away (the tab may be closed on the summary). Keep hunting and
+  // Found it again updates the same record, keeping the name given to it.
+  const recordId = huntRecordId ?? newRecordId(st.history, summary.foundAtWallMs)
+  huntRecordId = recordId
+  const label = st.history.find((r) => r.id === recordId)?.label ?? ''
+  commitHistory(upsertRecord(st.history, recordFromSummary(recordId, label, summary, CONFIG), CONFIG))
   closeScan()
   silence(s)
   // Nothing moves on the summary screen: let it dim (Keep hunting asks for the wake lock again).
   wakeLock.disable()
-  store.dispatch({ type: 'found', summary })
+  store.dispatch({ type: 'found', summary, recordId })
   scheduleFoundMicOff()
   if (st.settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
+}
+
+/** Keep the past hunts in the store and on this device (they stay for this visit if storage is blocked). */
+function commitHistory(history: readonly HuntRecord[]): void {
+  saveHistory(history)
+  store.dispatch({ type: 'history', history })
 }
 
 function scheduleFoundMicOff(): void {

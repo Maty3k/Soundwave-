@@ -14,6 +14,7 @@ import type {
   AppState,
   Capabilities,
   HuntPanel,
+  HuntRecord,
   LogEntry,
   PausedFrom,
   ScanState,
@@ -30,6 +31,7 @@ const FOUND_MIC_OFF: Screen = Object.freeze({ kind: 'found', micOff: true })
 /** Direction scan closed (the only scan state outside the hunting screen). */
 export const SCAN_CLOSED: ScanState = Object.freeze({ open: false, status: 'off', radar: null })
 const NO_LOG: readonly LogEntry[] = Object.freeze([])
+const NO_HISTORY: readonly HuntRecord[] = Object.freeze([])
 const METER: HuntPanel = 'meter'
 
 /** Longest a toast stays up, however long its text (audit item 14). */
@@ -82,13 +84,15 @@ export function initialState(caps: Capabilities, settings: Settings, debug: bool
     stations: null,
     stationMode: null,
     found: null,
+    foundRecordId: null,
+    history: NO_HISTORY,
   }
 }
 
 /**
  * Back to the landing screen, dropping the session (mic, lock, hunt, pending beep, log, station
- * view, Found it summary) but keeping settings, toast and the stations view (main owns the hub's
- * lifetime and dispatches `stations: null` when it tears the hub down).
+ * view, Found it summary) but keeping settings, toast, past hunts and the stations view (main owns
+ * the hub's lifetime and dispatches `stations: null` when it tears the hub down).
  */
 function toIdle(state: AppState): AppState {
   return {
@@ -105,6 +109,7 @@ function toIdle(state: AppState): AppState {
     log: NO_LOG,
     stationMode: null,
     found: null,
+    foundRecordId: null,
   }
 }
 
@@ -398,11 +403,21 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
     case 'found':
       // Lock, hunt, log, stations and the panel stay, so Keep hunting carries on where it left off.
       if (screen.kind !== 'hunting') return state
-      return { ...state, screen: FOUND, found: event.summary, confirmStop: false, scan: SCAN_CLOSED }
+      return {
+        ...state,
+        screen: FOUND,
+        found: event.summary,
+        foundRecordId: event.recordId ?? null,
+        confirmStop: false,
+        scan: SCAN_CLOSED,
+      }
 
     case 'keepHunting':
       if (screen.kind !== 'found') return state
-      return { ...state, screen: HUNTING, found: null }
+      return { ...state, screen: HUNTING, found: null, foundRecordId: null }
+
+    case 'history':
+      return event.history === state.history ? state : { ...state, history: event.history }
 
     case 'foundDone':
       // The session is over, exactly like a confirmed Stop.

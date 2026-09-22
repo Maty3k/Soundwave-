@@ -32,6 +32,7 @@ import {
   formatHz,
   formatPct,
   FOUND_COPY,
+  HISTORY_COPY,
   foundListenersParts,
   foundSummaryParts,
   GUIDANCE,
@@ -68,6 +69,7 @@ import type {
   Verdict,
 } from './types.ts'
 import { createRadarPanel } from './radarUi.ts'
+import { createHistoryPanel } from './ui/historyPanel.ts'
 import { createLogPanel } from './ui/logPanel.ts'
 import { createStationsPanel } from './ui/stationsPanel.ts'
 import { createStationScreen } from './ui/stationScreen.ts'
@@ -98,6 +100,10 @@ export interface UiHandlers {
   onFoundDone(): void
   /** Found it: end this session and start listening for another beep. Runs inside the click. */
   onNewHunt(): void
+  /** Found it: the name of the hunt's past-hunts record was edited (sent debounced and on blur). */
+  onHistoryLabel(id: number, label: string): void
+  /** Start screen: remove a past hunt. */
+  onHistoryRemove(id: number): void
   onResume(): void
   onRetry(): void
   onBack(): void
@@ -438,7 +444,15 @@ function landingView(state: AppState, handlers: UiHandlers): ScreenView {
     h('p', { class: 'privacy' }, lockIcon(), h('span', {}, L.privacy)),
     cta,
   )
-  return { el, focus: title, update() {} }
+  const history = createHistoryPanel(handlers, title)
+  el.append(history.el)
+  return {
+    el,
+    focus: title,
+    update(s) {
+      history.update(s)
+    },
+  }
 }
 
 function requestingView(handlers: UiHandlers, cfg: Config): ScreenView {
@@ -674,6 +688,8 @@ function listeningCount(view: StationsView | null): number {
 const ANNOUNCED_PHASES: ReadonlySet<string> = new Set(['hold', 'lost'])
 /** Live mode speaks a verdict at most this often, and only once it held for two verdict updates. */
 const LIVE_ANNOUNCE_GAP_MS = 5_000
+/** A past hunt's name is saved this long after the last keystroke (and at once on blur or Enter). */
+const NAME_DEBOUNCE_MS = 400
 const LIVE_ANNOUNCE_HOLD_UPDATES = 2
 
 /** ui-internal services the hunting screen needs from mountUi. */
@@ -1089,12 +1105,54 @@ function pausedView(from: PausedFrom, needsGesture: boolean, handlers: UiHandler
  * log) and the way on. The summary is drawn once per FoundSummary object; Copy log shows only
  * while the log has lines.
  */
-function foundView(handlers: UiHandlers): ScreenView {
+function foundView(handlers: UiHandlers, cfg: Config): ScreenView {
   const F = FOUND_COPY
   const title = heading(F.title, 'screen-title found-title')
   const summaryLine = h('p', { class: 'found-summary num' })
   const listenersLine = h('p', { class: 'found-listeners' })
   const hero = h('header', { class: 'found-hero' }, foundMark(), title, summaryLine, listenersLine)
+
+  // The name of this hunt under Past hunts ('Hallway smoke alarm'). Saved as it is typed.
+  const nameInput = h('input', {
+    type: 'text',
+    id: 'found-name',
+    class: 'found-name__input',
+    maxlength: cfg.historyLabelMaxLength,
+    placeholder: HISTORY_COPY.namePlaceholder,
+    autocomplete: 'off',
+    enterkeyhint: 'done',
+    'aria-describedby': 'found-name-hint',
+  })
+  const nameField = h(
+    'div',
+    { class: 'found-name', hidden: true },
+    h('label', { class: 'found-name__label', for: 'found-name' }, HISTORY_COPY.nameLabel),
+    nameInput,
+    h('p', { class: 'found-name__hint', id: 'found-name-hint' }, HISTORY_COPY.nameHint),
+  )
+  let recordId: number | null = null
+  let sentName = ''
+  let nameTimer: ReturnType<typeof setTimeout> | null = null
+  function flushName(): void {
+    if (nameTimer !== null) clearTimeout(nameTimer)
+    nameTimer = null
+    const value = nameInput.value.slice(0, cfg.historyLabelMaxLength)
+    if (recordId === null || value === sentName) return
+    sentName = value
+    handlers.onHistoryLabel(recordId, value)
+  }
+  nameInput.addEventListener('input', () => {
+    if (nameTimer !== null) clearTimeout(nameTimer)
+    nameTimer = setTimeout(flushName, NAME_DEBOUNCE_MS)
+  })
+  nameInput.addEventListener('blur', flushName)
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return
+    e.preventDefault()
+    flushName()
+    // Touch devices: close the on-screen keyboard (a keyboard user keeps the focus).
+    if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) nameInput.blur()
+  })
 
   const tip = h('p', { class: 'found-tip' }, batteryIcon(), h('span', {}, h('strong', {}, F.tipTitle), ` ${F.tip}`))
 
@@ -1119,7 +1177,7 @@ function foundView(handlers: UiHandlers): ScreenView {
     h('div', { class: 'found-keep' }, keepHint, keep),
   )
 
-  const el = section('found', hero, tip, notes, actions)
+  const el = section('found', hero, nameField, tip, notes, actions)
 
   /**
    * Parts as whole, unbreakable items: a line breaks only between them. The separator dot belongs
@@ -1168,9 +1226,21 @@ function foundView(handlers: UiHandlers): ScreenView {
         drawNotes(summary)
       }
       setHidden(copyLog, state.log.length === 0)
+      if (state.foundRecordId !== recordId) {
+        flushName()
+        recordId = state.foundRecordId
+        const record = state.history.find((r) => r.id === recordId)
+        nameInput.value = record?.label ?? ''
+        sentName = nameInput.value
+      }
+      setHidden(nameField, recordId === null || !state.history.some((r) => r.id === recordId))
       // Only on a change, so the live region announces it once.
       const hint = state.screen.micOff === true ? F.keepHintMicOff : F.keepHint
       if (keepHint.textContent !== hint) keepHint.textContent = hint
+    },
+    dispose() {
+      // A name typed just before Done or New hunt is still saved.
+      flushName()
     },
   }
 }
@@ -1222,7 +1292,7 @@ function buildView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: Hu
     case 'station':
       return stationView(handlers, cfg)
     case 'found':
-      return foundView(handlers)
+      return foundView(handlers, cfg)
   }
 }
 

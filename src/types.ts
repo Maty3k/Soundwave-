@@ -331,6 +331,16 @@ export interface FoundSummary {
   readonly listeners: number
 }
 
+/** A hunt that ended with Found it, kept under Past hunts on this device only (history.ts). */
+export interface HuntRecord {
+  /** Unique in the history: epoch ms of the hunt's first Found it (bumped past a clash). */
+  readonly id: number
+  /** The person's name for it ('Hallway smoke alarm'); '' until they give one. */
+  readonly label: string
+  /** As of the hunt's last Found it (Keep hunting and Found it again updates it). */
+  readonly summary: FoundSummary
+}
+
 /** Which panel the hunting screen shows under the verdict. */
 export type HuntPanel = 'meter' | 'direction' | 'log' | 'stations'
 
@@ -470,6 +480,10 @@ export interface AppState {
   readonly stationMode: StationModeView | null
   /** Present while screen.kind is 'found'. */
   readonly found: FoundSummary | null
+  /** The history record of the hunt on the Found it screen (its name is edited there). */
+  readonly foundRecordId: number | null
+  /** Past hunts on this device, newest first (main loads and saves them; history.ts). */
+  readonly history: readonly HuntRecord[]
 }
 
 export type AppEvent =
@@ -511,7 +525,9 @@ export type AppEvent =
   | { readonly type: 'stationView'; readonly view: StationModeView }
   | { readonly type: 'stationStop' }
   /** hunting -> found (keeps lock, hunt, log and stations so Keep hunting can resume). */
-  | { readonly type: 'found'; readonly summary: FoundSummary }
+  | { readonly type: 'found'; readonly summary: FoundSummary; readonly recordId?: number }
+  /** The past hunts changed (loaded at start, a hunt found, renamed or removed). */
+  | { readonly type: 'history'; readonly history: readonly HuntRecord[] }
   /** found -> hunting. */
   | { readonly type: 'keepHunting' }
   /** found -> idle (the session is over; the log is cleared like after Stop). */

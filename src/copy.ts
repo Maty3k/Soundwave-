@@ -12,6 +12,7 @@ import type {
   ErrorCode,
   FoundSummary,
   HuntPanel,
+  HuntRecord,
   HuntView,
   Lock,
   LockMode,
@@ -1115,4 +1116,78 @@ export function stationLastChirpText(db: number | null, wallMs: number | null): 
 /** Chirps a station has sent, grouped: '1,204'. */
 export function stationChirpsText(n: number): string {
   return groupThousands(Number.isFinite(n) && n > 0 ? Math.round(n) : 0)
+}
+
+// ---- Past hunts ----------------------------------------------------------------------------------
+
+/** Static strings of the Past hunts list (start screen) and the name field on the Found it screen. */
+export const HISTORY_COPY = {
+  title: 'Past hunts',
+  intro: 'Beeps you found, saved on this device only.',
+  remove: 'Remove',
+  removed: 'Removed from past hunts.',
+  notesLabel: 'Notes',
+  nameLabel: 'What was it?',
+  namePlaceholder: 'e.g. Hallway smoke alarm',
+  nameHint: 'Saved on this device under Past hunts.',
+  /** Title of a past hunt without a name or a known frequency. */
+  untitled: 'Beep',
+} as const
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+
+/**
+ * When a past hunt was found, in local time: 'Mon 22 Sep, 14:05', with the year when it differs
+ * from nowMs's ('Tue 3 Dec 2024, 09:30'). '' when unknown.
+ */
+export function formatHuntDate(wallMs: number, nowMs: number): string {
+  const d = new Date(wallMs)
+  if (!Number.isFinite(wallMs) || Number.isNaN(d.getTime())) return ''
+  const now = new Date(nowMs)
+  const sameYear = !Number.isNaN(now.getTime()) && now.getFullYear() === d.getFullYear()
+  const day = `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}${sameYear ? '' : ` ${d.getFullYear()}`}`
+  return `${day}, ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+/** '3,100 Hz beep' ('tone' in live mode), or null without a usable frequency. */
+function beepName(summary: FoundSummary): string | null {
+  const f0 = summary.f0Hz
+  if (f0 === null || !Number.isFinite(f0) || f0 <= 0) return null
+  return `${formatHz(f0)} ${summary.mode === 'live' ? FOUND_COPY.tone : FOUND_COPY.beep}`
+}
+
+/** A past hunt's name with runs of white space collapsed; '' when it has none. */
+export function historyName(record: HuntRecord): string {
+  return record.label.replace(/\s+/g, ' ').trim()
+}
+
+/** What a past hunt is called: its name, else '3,100 Hz beep', else 'Beep'. */
+export function historyTitle(record: HuntRecord): string {
+  const name = historyName(record)
+  if (name !== '') return name
+  return beepName(record.summary) ?? HISTORY_COPY.untitled
+}
+
+/**
+ * The details of a past hunt after its date: the frequency (only when the title is the name, as
+ * an unnamed hunt is titled by it), how long it took and the chirps heard, as on Found it.
+ */
+export function historyDetailParts(record: HuntRecord): string[] {
+  const s = record.summary
+  const parts: string[] = []
+  const beep = beepName(s)
+  if (beep !== null && historyName(record) !== '') parts.push(beep)
+  const started = s.startedAtWallMs
+  if (started !== null && Number.isFinite(started) && Number.isFinite(s.foundAtWallMs) && s.foundAtWallMs >= started) {
+    parts.push(`found in ${formatDuration(s.foundAtWallMs - started)}`)
+  }
+  const n = Number.isFinite(s.readings) ? Math.round(s.readings) : 0
+  if (s.mode !== 'live' && n > 0) parts.push(n === 1 ? '1 chirp' : `${groupThousands(n)} chirps`)
+  return parts
+}
+
+/** Accessible name of a past hunt's Remove button. */
+export function historyRemoveLabel(record: HuntRecord): string {
+  return `Remove ${historyTitle(record)} from past hunts`
 }

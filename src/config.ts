@@ -263,6 +263,13 @@ export interface Config {
   readonly logMaxEntries: number
   readonly logNoteMaxLength: number
 
+  // ---- Past hunts (history.ts) -----------------------------------------------------------------
+  /** Hunts kept under Past hunts; the oldest is dropped beyond this. */
+  readonly historyMaxEntries: number
+  readonly historyLabelMaxLength: number
+  /** Log notes kept per past hunt (the newest ones). */
+  readonly historyMaxNotes: number
+
   // ---- UI ------------------------------------------------------------------------------------
   readonly noBeepHintMs: number
   readonly lockedBannerMs: number
@@ -400,6 +407,10 @@ export const CONFIG: Config = Object.freeze({
 
   logMaxEntries: 200,
   logNoteMaxLength: 120,
+
+  historyMaxEntries: 20,
+  historyLabelMaxLength: 60,
+  historyMaxNotes: 12,
 
   noBeepHintMs: 90_000,
   lockedBannerMs: 5000,

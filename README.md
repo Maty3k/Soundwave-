@@ -12,7 +12,7 @@ Everything runs in your browser, and after the first visit it also works offline
 2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous beep locks after about 2 seconds. If you are sure after the first chirp, tap **Use it now**. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
 3. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
 4. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen. They stop when it is time to hold still.
-5. When you have found it, tap **Found it**. You get a summary (frequency, how long it took, how many chirps, your notes and, with stations, which one heard it loudest) and a tip for smoke alarms. **Keep hunting** takes you back if it was not the right thing after all. After two minutes on this screen the microphone turns off; Keep hunting turns it back on.
+5. When you have found it, tap **Found it**. You get a summary (frequency, how long it took, how many chirps, your notes and, with stations, which one heard it loudest) and a tip for smoke alarms. **Keep hunting** takes you back if it was not the right thing after all. After two minutes on this screen the microphone turns off; Keep hunting turns it back on. Each hunt you find is saved under **Past hunts** on the start screen, on this device only: give it a name on the Found it screen ("Hallway smoke alarm") and next time you can see its frequency, when you found it and your notes.
 
 Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means the microphone is overloaded: you are probably within arm's reach. Smoke detectors live on ceilings.
 
@@ -126,11 +126,12 @@ src/
   copy.ts          all user-facing text
   ui.ts, style.css DOM rendering and styles
   platform.ts      capabilities, wake lock, haptics, settings storage
+  history.ts       past hunts, saved on this device (localStorage)
   hub.ts           stations and extra microphones on the main device (pairing, comparison)
   stationMode.ts   this device as a listening station
   extraMics.ts     extra microphones on the same device
   net/             pairing codes, QR codes, messages and clock sync between devices
-  ui/              log panel, stations panel, station screen
+  ui/              log panel, stations panel, station screen, past hunts
   orientation.ts   compass heading for the direction scan
   radarUi.ts       direction-scan radar panel
   audio/           microphone, analyser loop, Geiger clicker (browser code)

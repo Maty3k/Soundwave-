@@ -6,6 +6,7 @@ import type {
   AppState,
   Capabilities,
   FoundSummary,
+  HuntRecord,
   HuntView,
   Lock,
   LogEntry,
@@ -1177,5 +1178,47 @@ describe('createStore', () => {
     store.dispatch({ type: 'settings', patch: { clicks: false } })
     expect(store.get().settings.clicks).toBe(false)
     expect(store.get().toast).toBeNull() // the dropped toast does not resurface on the next dispatch
+  })
+})
+
+describe('reduce: past hunts', () => {
+  const H: readonly HuntRecord[] = [{ id: 42, label: 'Hallway smoke alarm', summary: SUMMARY }]
+
+  it('starts empty, with no record on the Found it screen', () => {
+    const s = initialState(CAPS, SETTINGS, false, NOW)
+    expect(s.history).toEqual([])
+    expect(s.foundRecordId).toBeNull()
+  })
+
+  it('takes the history on every screen', () => {
+    for (const screen of Object.values(S)) {
+      const s = on(screen)
+      const next = reduce(s, { type: 'history', history: H }, CONFIG)
+      expect(next.history, JSON.stringify(screen)).toBe(H)
+      expect(next.screen).toBe(s.screen)
+      expect(reduce(next, { type: 'history', history: H }, CONFIG)).toBe(next)
+    }
+  })
+
+  it('keeps it through Stop, Done, New hunt and station mode', () => {
+    const hunting = on(S.hunting, { history: H })
+    const stopped = reduce(reduce(hunting, { type: 'stopRequest' }, CONFIG), { type: 'stopConfirm' }, CONFIG)
+    expect(stopped.history).toBe(H)
+    const found = reduce(hunting, { type: 'found', summary: SUMMARY, recordId: 42 }, CONFIG)
+    expect(reduce(found, { type: 'foundDone' }, CONFIG).history).toBe(H)
+    expect(reduce(found, { type: 'start', nowMs: T1 }, CONFIG).history).toBe(H)
+    const station = reduce(on(S.idle, { history: H }), { type: 'stationStart' }, CONFIG)
+    expect(reduce(station, { type: 'stationStop' }, CONFIG).history).toBe(H)
+  })
+
+  it("holds the Found it screen's record id only while that screen is shown", () => {
+    const hunting = on(S.hunting, { hunt: HUNT_AT, history: H })
+    const found = reduce(hunting, { type: 'found', summary: SUMMARY, recordId: 42 }, CONFIG)
+    expect(found.foundRecordId).toBe(42)
+    expect(reduce(hunting, { type: 'found', summary: SUMMARY }, CONFIG).foundRecordId).toBeNull()
+    expect(reduce(found, { type: 'foundMicOff' }, CONFIG).foundRecordId).toBe(42)
+    expect(reduce(found, { type: 'keepHunting' }, CONFIG).foundRecordId).toBeNull()
+    expect(reduce(found, { type: 'foundDone' }, CONFIG).foundRecordId).toBeNull()
+    expect(reduce(found, { type: 'start', nowMs: T1 }, CONFIG).foundRecordId).toBeNull()
   })
 })
