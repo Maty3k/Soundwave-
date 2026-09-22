@@ -382,7 +382,7 @@ describe('click leakage into the measured band (reference analyser)', () => {
       if (meanBandAt(frames, f0) - meanBandAt(quietFrames, f0) >= MAX_RISE_DB) tooLoud.push(f0)
     }
     expect(tooLoud).toEqual([])
-  })
+  }, 30_000) // about 2,000 frequencies across the search band: slow when the suite runs in parallel
 })
 
 describe('vibrationTier', () => {

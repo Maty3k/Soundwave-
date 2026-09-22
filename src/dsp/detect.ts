@@ -6,7 +6,8 @@
  * steady frequency is a "sighting" (one heard chirp). The lock policy then decides:
  * - fast (only with config.lockConfirmChirps 1): one sighting whose best per-bin SNR reaches
  *   fastLockSnrDb;
- * - slow: two sightings at >= slowLockSnrDb, within lock tolerance and >= slowLockGapMs apart (with
+ * - slow: two sightings at >= slowLockSnrAt, within lock tolerance and >= slowLockGapMs apart, both
+ *   clear (isClearSighting) when they are more than slowLockMemoryMs apart (with
  *   lockConfirmChirps 2 this is the only way a chirp locks: the second sighting confirms the first);
  * - sustained: a stable track that is still open after sustainedLockMs (continuous tone, live mode).
  * config.lockConfirmChirps is limited to 1 or 2: values above 2 act as 2 (a confirmed pair is the
@@ -72,7 +73,7 @@ export interface DetectorState {
   /**
    * Sightings that reached slowLockSnrDb and found no partner, in the order their tracks closed (a
    * long track can close after a later, shorter one, so this is not onset order). Forgotten after
-   * slowLockMemoryMs. pendingBeep and lockFromPending read them.
+   * sightingMemoryMs. pendingBeep and lockFromPending read them.
    */
   readonly memory: Sighting[]
   /** Circular buffer of each frame's strongest peak (see recentPeaks). */
@@ -233,11 +234,12 @@ export function recentPeaks(state: DetectorState, nowMs: number, windowMs: numbe
  * The beep heard so far that is most worth showing while listening waits for the confirming chirp,
  * or null when there is none (or the detector has already returned a Lock).
  *
- * Only remembered sightings that could still lock count: best per-bin SNR >= slowLockSnrDb, onset
- * at most slowLockMemoryMs before nowMs, and not within lock tolerance of an excluded frequency. A
+ * Only remembered sightings that could still lock count: best per-bin SNR >= slowLockSnrAt, onset
+ * at most sightingMemoryMs before nowMs, and not within lock tolerance of an excluded frequency. A
  * group is one of them plus every other one within lockToleranceBins of it (compared in Hz, so
- * sightings from before a change of bin width still group). The group with the most sightings
- * wins, then the one with the highest SNR, then the most recent one. f0Hz is the group's mean
+ * sightings from before a change of bin width still group). A group with a clear sighting
+ * (isClearSighting) wins over one without, so a real beep is not pushed aside by faint noise;
+ * then the group with the most sightings, then the one with the highest SNR, then the most recent. f0Hz is the group's mean
  * frequency, snrDb its best per-bin SNR, heardAtMs its latest onset (the time a hunt reading of that
  * chirp carries). A double chirp shows as 2 sightings although it does not lock (its two chirps are
  * closer than slowLockGapMs). Only chirps that have ended count: nothing shows while the first one
@@ -419,6 +421,14 @@ function confirmChirps(cfg: Config): 1 | 2 {
 }
 
 /**
+ * Best per-bin SNR a sighting at f0Hz needs to be remembered, shown as a pending beep and paired
+ * into a slow lock: slowLockSnrDb, plus highBandExtraSnrDb from highBandFromHz up.
+ */
+export function slowLockSnrAt(f0Hz: number, cfg: Config): number {
+  return f0Hz >= cfg.highBandFromHz ? cfg.slowLockSnrDb + cfg.highBandExtraSnrDb : cfg.slowLockSnrDb
+}
+
+/**
  * Fast lock first (lockConfirmChirps 1 only), then slow lock; remembers slow-lock-worthy sightings
  * that found no partner. A slow lock pairs with the qualifying remembered sighting that started
  * most recently.
@@ -439,17 +449,21 @@ function lockFromSightings(state: DetectorState, sightings: readonly Sighting[],
   }
 
   for (const s of sightings) {
-    if (s.maxSnrDb < cfg.slowLockSnrDb) continue
+    if (s.maxSnrDb < slowLockSnrAt(s.chirp.f0Hz, cfg)) continue
     const tol = lockToleranceBins(s.chirp.f0Hz, s.binHz, cfg.lockTolPct, cfg.lockTolMinBins)
     let partner: Sighting | null = null
     for (const e of memory) {
-      const apart = s.chirp.tOnsetMs - e.chirp.tOnsetMs >= cfg.slowLockGapMs
+      const gapMs = s.chirp.tOnsetMs - e.chirp.tOnsetMs
+      const apart = gapMs >= cfg.slowLockGapMs
       const near = Math.abs(s.chirp.f0Hz - e.chirp.f0Hz) / s.binHz <= tol
-      if (apart && near && (partner === null || e.chirp.tOnsetMs > partner.chirp.tOnsetMs)) partner = e
+      // Beyond the short memory only two clear sightings confirm each other: a faint one (often
+      // microphone noise) must not confirm a beep heard up to clearSightingMemoryMs earlier.
+      const trusted = gapMs <= cfg.slowLockMemoryMs || (isClearSighting(s, cfg) && isClearSighting(e, cfg))
+      if (apart && near && trusted && (partner === null || e.chirp.tOnsetMs > partner.chirp.tOnsetMs)) partner = e
     }
     if (partner !== null) {
       return {
-        f0Hz: (partner.chirp.f0Hz + s.chirp.f0Hz) / 2,
+        f0Hz: snrWeightedHz(partner, s),
         mode: 'chirp',
         reason: 'slow',
         tMs: nowMs,
@@ -467,11 +481,12 @@ function pendingGroup(state: DetectorState, nowMs: number, cfg: Config): Sightin
   if (state.done) return []
   const usable = state.memory.filter(
     (s) =>
-      s.maxSnrDb >= cfg.slowLockSnrDb &&
-      nowMs - s.chirp.tOnsetMs <= cfg.slowLockMemoryMs &&
+      s.maxSnrDb >= slowLockSnrAt(s.chirp.f0Hz, cfg) &&
+      nowMs - s.chirp.tOnsetMs <= sightingMemoryMs(s, cfg) &&
       !isExcluded(s.chirp.f0Hz / s.binHz, s.binHz, state.excludeHz, cfg),
   )
   let best: Sighting[] = []
+  let bestClear = false
   let bestSnrDb = -Infinity
   let bestLatestMs = -Infinity
   for (const seed of usable) {
@@ -479,18 +494,23 @@ function pendingGroup(state: DetectorState, nowMs: number, cfg: Config): Sightin
     const group = usable.filter((s) => Math.abs(s.chirp.f0Hz - seed.chirp.f0Hz) / seed.binHz <= tol)
     let snrDb = -Infinity
     let latestMs = -Infinity
+    let clear = false
     for (const s of group) {
       snrDb = Math.max(snrDb, s.maxSnrDb)
       latestMs = Math.max(latestMs, s.chirp.tOnsetMs)
+      clear ||= isClearSighting(s, cfg)
     }
     const better =
-      group.length !== best.length
-        ? group.length > best.length
-        : snrDb !== bestSnrDb
-          ? snrDb > bestSnrDb
-          : latestMs > bestLatestMs
+      clear !== bestClear
+        ? clear
+        : group.length !== best.length
+          ? group.length > best.length
+          : snrDb !== bestSnrDb
+            ? snrDb > bestSnrDb
+            : latestMs > bestLatestMs
     if (better) {
       best = group
+      bestClear = clear
       bestSnrDb = snrDb
       bestLatestMs = latestMs
     }
@@ -516,10 +536,34 @@ function samePending(a: PendingBeep, b: PendingBeep): boolean {
   return a.f0Hz === b.f0Hz && a.snrDb === b.snrDb && a.heardAtMs === b.heardAtMs && a.sightings === b.sightings
 }
 
-/** Drop remembered sightings that started more than slowLockMemoryMs before nowMs, wherever they sit. */
+type SightingLike = { readonly chirp: { readonly f0Hz: number }; readonly maxSnrDb: number }
+
+/** A clear sighting: best per-bin SNR at least clearSightingExtraSnrDb above slowLockSnrAt its frequency. */
+export function isClearSighting(s: SightingLike, cfg: Config): boolean {
+  return s.maxSnrDb >= slowLockSnrAt(s.chirp.f0Hz, cfg) + cfg.clearSightingExtraSnrDb
+}
+
+/** How long a sighting is remembered: clearSightingMemoryMs when it is clear, else slowLockMemoryMs. */
+export function sightingMemoryMs(s: SightingLike, cfg: Config): number {
+  return isClearSighting(s, cfg) ? Math.max(cfg.clearSightingMemoryMs, cfg.slowLockMemoryMs) : cfg.slowLockMemoryMs
+}
+
+/**
+ * The frequency of a slow-locked pair: the mean weighted by per-bin SNR in power, so two equal
+ * sightings give their plain mean and a strong beep confirmed by a faint one keeps the beep's own
+ * frequency (the faint one may be noise that only happened to fall within lock tolerance).
+ */
+function snrWeightedHz(a: SightingLike, b: SightingLike): number {
+  const top = Math.max(a.maxSnrDb, b.maxSnrDb)
+  const wa = 10 ** ((a.maxSnrDb - top) / 10)
+  const wb = 10 ** ((b.maxSnrDb - top) / 10)
+  return (a.chirp.f0Hz * wa + b.chirp.f0Hz * wb) / (wa + wb)
+}
+
+/** Drop remembered sightings that started longer ago than their memory time (sightingMemoryMs), wherever they sit. */
 function forgetOld(memory: Sighting[], nowMs: number, cfg: Config): void {
   let kept = 0
-  for (const s of memory) if (nowMs - s.chirp.tOnsetMs <= cfg.slowLockMemoryMs) memory[kept++] = s
+  for (const s of memory) if (nowMs - s.chirp.tOnsetMs <= sightingMemoryMs(s, cfg)) memory[kept++] = s
   memory.length = kept
 }
 

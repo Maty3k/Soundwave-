@@ -685,7 +685,7 @@ function listeningCount(view: StationsView | null): number {
 }
 
 /** Countdown kinds worth a polite announcement when they begin (not 'late' / 'overdue': the chirp is due then). */
-const ANNOUNCED_PHASES: ReadonlySet<string> = new Set(['hold', 'lost'])
+const ANNOUNCED_PHASES: ReadonlySet<string> = new Set(['hold', 'wait', 'lost'])
 /** Live mode speaks a verdict at most this often, and only once it held for two verdict updates. */
 const LIVE_ANNOUNCE_GAP_MS = 5_000
 /** A past hunt's name is saved this long after the last keystroke (and at once on blur or Enter). */
@@ -1000,7 +1000,7 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
       }
       // While a chirp sounds outside the hold window, 'Hearing it' alone is the news: the long
       // 'move now' line next to it would wrap to a third line and make the bar jump.
-      const hearingOnly = mode === 'chirp' && isHearing && kind !== 'hold' && kind !== 'late'
+      const hearingOnly = mode === 'chirp' && isHearing && kind !== 'hold' && kind !== 'late' && kind !== 'wait'
       setText(statusText, text)
       setHidden(statusText, text === '' || hearingOnly)
       setHidden(hearing, !isHearing)

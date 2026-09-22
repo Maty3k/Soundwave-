@@ -447,8 +447,8 @@ function waitingText(sinceLastS: number | null): string {
 /**
  * The status line under the verdict: what to do right now. Between chirps it says to move (with
  * the expected time when the interval is confident); from the hold window on it says to freeze.
- * eta rounds to whole seconds (at least 1); lost shows sinceLastS as m:ss. Empty for null (live
- * mode has no countdown).
+ * eta rounds to whole seconds (at least 1), or to whole minutes from 2 min; wait (beeps minutes
+ * apart) and lost show sinceLastS as m:ss. Empty for null (live mode has no countdown).
  */
 export function countdownText(countdown: Countdown | null): string {
   if (countdown === null) return ''
@@ -456,9 +456,14 @@ export function countdownText(countdown: Countdown | null): string {
     case 'eta':
       if (countdown.etaS === null) return waitingText(countdown.sinceLastS)
       // A no-break space keeps '~23 s' together when the line wraps on a narrow screen.
+      if (countdown.etaS >= 120) return `Move now · next chirp in ~${Math.round(countdown.etaS / 60)}\u00a0min`
       return `Move now · next chirp in ~${Math.max(1, Math.round(countdown.etaS))}\u00a0s`
     case 'hold':
       return 'Hold still…'
+    case 'wait':
+      return countdown.sinceLastS === null
+        ? 'Stay here until the next beep'
+        : `Stay here until the next beep · last one ${formatClock(countdown.sinceLastS)} ago`
     case 'late':
       return 'Hold still… chirp is late'
     case 'overdue':

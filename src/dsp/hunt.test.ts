@@ -658,7 +658,7 @@ describe('countdown', () => {
     expect(est.confident).toBe(true)
     const last = lastOf(onsets)
     const expected = last + est.medianMs
-    const holdStart = expected - CONFIG.holdStartS * 1000
+    const holdStart = expected - CONFIG.holdStartS * 1000 - 2 * est.madMs
     const holdEnd = expected + Math.max(2 * est.madMs, CONFIG.holdEndMinS * 1000) + CONFIG.holdEndExtraS * 1000
     const overdue = last + CONFIG.overdueX * est.medianMs
     const lost = last + CONFIG.lostX * est.medianMs
@@ -720,6 +720,48 @@ describe('countdown', () => {
   it('is null in live mode, where nothing is held', () => {
     const hunt = createHunt(lockAt({ mode: 'live' }), CONFIG)
     expect(countdownAt(hunt, 1000, CONFIG)).toEqual({ countdown: null, holdActive: false })
+  })
+
+  it('says to stay put once the last beep is longWaitS old and the rhythm is unknown', () => {
+    const longMs = CONFIG.longWaitS * 1000
+    const one = createHunt(lockAt({ chirps: [chirpAt(1000, -70)] }), CONFIG)
+    expect(countdownAt(one, 1000 + longMs - 1, CONFIG)).toMatchObject({ countdown: { kind: 'unknown' }, holdActive: false })
+    expect(countdownAt(one, 1000 + longMs, CONFIG)).toEqual({
+      countdown: { kind: 'wait', etaS: null, sinceLastS: CONFIG.longWaitS, intervalS: null, confident: false },
+      holdActive: true,
+    })
+    // One gap of 8 minutes (not confident yet): move in the first minute, then stay put.
+    const two = createHunt(lockAt({ chirps: [chirpAt(1000, -70), chirpAt(481_000, -70)] }), CONFIG)
+    expect(countdownAt(two, 481_000 + 30_000, CONFIG)).toMatchObject({ countdown: { kind: 'unknown' }, holdActive: false })
+    expect(countdownAt(two, 481_000 + longMs, CONFIG)).toMatchObject({
+      countdown: { kind: 'wait', intervalS: 480 },
+      holdActive: true,
+    })
+    expect(huntView(two, 481_000 + longMs, CONFIG).holdActive).toBe(true)
+  })
+
+  it('beeps 7-10 minutes apart: move early, then stay put from 2 MAD before the median until lost', () => {
+    const beeps = [0, 480_000, 1_020_000, 1_440_000, 2_010_000] // gaps of 8, 9, 7 and 9.5 min
+    const hunt = createHunt(lockAt({ chirps: beeps.map((t) => chirpAt(t, -70)) }), CONFIG)
+    const est = estimateInterval(beeps.slice(1).map((t, i) => t - beeps[i]!), CONFIG)!
+    expect(est.confident).toBe(true)
+    expect(est.medianMs).toBeGreaterThanOrEqual(CONFIG.longWaitS * 1000)
+    const last = lastOf(beeps)
+    const expected = last + est.medianMs
+    const waitFrom = expected - CONFIG.holdStartS * 1000 - 2 * est.madMs
+    const lost = last + CONFIG.lostX * est.medianMs
+    // These beeps come up to 1.5 min early: the wait starts well before the median.
+    expect(expected - waitFrom).toBeGreaterThan(60_000)
+
+    const at = (t: number): ReturnType<typeof countdownAt> => countdownAt(hunt, t, CONFIG)
+    expect(at(last + 60_000)).toMatchObject({ countdown: { kind: 'eta', confident: true }, holdActive: false })
+    expect(at(waitFrom - 1).countdown!.kind).toBe('eta')
+    expect(at(waitFrom)).toMatchObject({ countdown: { kind: 'wait' }, holdActive: true })
+    // Where short intervals say 'late' and 'overdue', a long wait just goes on.
+    expect(at(expected + 5 * 60_000)).toMatchObject({ countdown: { kind: 'wait' }, holdActive: true })
+    expect(at(last + CONFIG.overdueX * est.medianMs + 1)).toMatchObject({ countdown: { kind: 'wait' }, holdActive: true })
+    expect(at(lost).countdown!.kind).toBe('wait')
+    expect(at(lost + 1)).toMatchObject({ countdown: { kind: 'lost' }, holdActive: false })
   })
 })
 

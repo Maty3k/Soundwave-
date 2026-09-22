@@ -9,8 +9,8 @@ Everything runs in your browser, and after the first visit it also works offline
 ## How to use it
 
 1. Tap **Start listening** and allow the microphone.
-2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous beep locks after about 2 seconds. If you are sure after the first chirp, tap **Use it now**. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
-3. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
+2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous beep locks after about 2 seconds. It remembers a clear first chirp for 15 minutes (a faint one for 3), so an alarm that beeps only every few minutes still locks on its second beep. If you are sure after the first chirp, tap **Use it now**. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
+3. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. When the beeps are minutes apart and irregular, it says **Stay here until the next beep** instead, with the time since the last one, and the clicks pause meanwhile: move to a new spot right after a beep, then wait there. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
 4. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen. They stop when it is time to hold still.
 5. When you have found it, tap **Found it**. You get a summary (frequency, how long it took, how many chirps, your notes and, with stations, which one heard it loudest) and a tip for smoke alarms. **Keep hunting** takes you back if it was not the right thing after all. After two minutes on this screen the microphone turns off; Keep hunting turns it back on. Each hunt you find is saved under **Past hunts** on the start screen, on this device only: give it a name on the Found it screen ("Hallway smoke alarm") and next time you can see its frequency, when you found it and your notes.
 
@@ -108,6 +108,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
 - The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
+- Soundwave listens for beeps between 1,500 and 12,000 Hz. Above 6,000 Hz a beep has to stand out a little more before it counts, because microphone noise alone would otherwise pass for a beep there now and then.
 - Scanning a pairing QR code needs a camera. Chrome on Android, macOS and ChromeOS use their built-in QR detector; other browsers load a small bundled decoder (qr by Paul Miller) the first time they scan. Without a camera, use Copy code or Share and paste the code on the other device.
 - Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
 

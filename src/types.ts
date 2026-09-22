@@ -124,7 +124,12 @@ export interface Reading {
   readonly source: 'chirp' | 'train'
 }
 
-export type CountdownKind = 'unknown' | 'eta' | 'hold' | 'late' | 'overdue' | 'lost'
+/**
+ * 'wait': a long wait (config.longWaitS): stay put until the next beep, however long it takes.
+ * It stands for 'hold', 'late' and 'overdue' when the interval is that long, and for 'unknown'
+ * once the last reading is that old.
+ */
+export type CountdownKind = 'unknown' | 'eta' | 'hold' | 'wait' | 'late' | 'overdue' | 'lost'
 
 export interface Countdown {
   readonly kind: CountdownKind

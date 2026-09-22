@@ -285,6 +285,15 @@ describe('countdownText', () => {
     expect(countdownText(cd('lost', -90, 130))).toBe("Haven't heard it for 2:10. Keep waiting, or tap Listen again.")
     expect(countdownText(cd('unknown', null, 52))).toBe('Move 2–3 m now, then hold still for the next chirp.')
     expect(countdownText(cd('unknown', null, null))).toBe('Waiting for the first chirp…')
+    expect(countdownText(cd('wait', null, 432.4))).toBe('Stay here until the next beep · last one 7:12 ago')
+  })
+
+  it('counts long waits in minutes', () => {
+    expect(countdownText(cd('eta', 119, 400))).toBe('Move now · next chirp in ~119\u00a0s')
+    expect(countdownText(cd('eta', 120, 400))).toBe('Move now · next chirp in ~2\u00a0min')
+    expect(countdownText(cd('eta', 331, 180))).toBe('Move now · next chirp in ~6\u00a0min')
+    expect(countdownText(cd('wait', -40, 61))).toBe('Stay here until the next beep · last one 1:01 ago')
+    expect(countdownText(cd('wait', null, null))).toBe('Stay here until the next beep')
   })
 
   it('names the Listen again button the hunting screen really has', () => {

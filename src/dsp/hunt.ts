@@ -816,12 +816,14 @@ function liveView(state: HuntState, lv: LiveState): LiveView {
  * Countdown to the next expected chirp at nowMs (chirp mode; null in live mode), from the onset L
  * of the last reading and the interval estimate:
  * - no reading yet: 'unknown' with null times;
- * - no or unconfident interval: 'unknown' with sinceLastS (and intervalS once a gap exists);
- * - confident, T = L + median: 'eta' before T - holdStartS, 'hold' until
+ * - no or unconfident interval: 'unknown' with sinceLastS (and intervalS once a gap exists), then
+ *   'wait' once L is longWaitS old (beeps minutes apart: stay put until the next one);
+ * - confident, T = L + median: 'eta' before T - holdStartS - 2 * MAD, 'hold' until
  *   T + max(2 * MAD, holdEndMinS) + holdEndExtraS, then 'late', 'overdue' past overdueX * median
- *   since L and 'lost' past lostX * median.
- * holdActive (clicks and haptics silent) = 'hold' or a chirp segment currently open; always false
- * in live mode. L comes from the onset history, which resetBest keeps.
+ *   since L and 'lost' past lostX * median. With a median of at least longWaitS, 'hold', 'late'
+ *   and 'overdue' are all 'wait'.
+ * holdActive (clicks and haptics silent) = 'hold', 'wait' or a chirp segment currently open;
+ * always false in live mode. L comes from the onset history, which resetBest keeps.
  */
 export function countdownAt(
   state: HuntState,
@@ -839,27 +841,32 @@ export function countdownAt(
   }
   const est = estimateInterval(state.gapsMs, cfg)
   const sinceMs = nowMs - last
+  const longMs = cfg.longWaitS * 1000
   if (est === null || !est.confident) {
+    // No rhythm yet. A beep this long ago means beeps minutes apart: stay put for the next one.
+    const wait = sinceMs >= longMs
     return {
       countdown: {
-        kind: 'unknown',
+        kind: wait ? 'wait' : 'unknown',
         etaS: null,
         sinceLastS: sinceMs / 1000,
         intervalS: est === null ? null : est.medianMs / 1000,
         confident: false,
       },
-      holdActive: segOpen,
+      holdActive: wait || segOpen,
     }
   }
   const expectedMs = last + est.medianMs
-  const holdStartMs = expectedMs - cfg.holdStartS * 1000
+  // Irregular beeps come early as often as late: the hold starts 2 MAD sooner, as it ends 2 MAD later.
+  const holdStartMs = expectedMs - cfg.holdStartS * 1000 - 2 * est.madMs
   const holdEndMs = expectedMs + Math.max(2 * est.madMs, cfg.holdEndMinS * 1000) + cfg.holdEndExtraS * 1000
+  const long = est.medianMs >= longMs
   let kind: CountdownKind
   if (nowMs < holdStartMs) kind = 'eta'
-  else if (nowMs <= holdEndMs) kind = 'hold'
+  else if (nowMs <= holdEndMs) kind = long ? 'wait' : 'hold'
   else if (sinceMs > cfg.lostX * est.medianMs) kind = 'lost'
-  else if (sinceMs > cfg.overdueX * est.medianMs) kind = 'overdue'
-  else kind = 'late'
+  else if (sinceMs > cfg.overdueX * est.medianMs) kind = long ? 'wait' : 'overdue'
+  else kind = long ? 'wait' : 'late'
   return {
     countdown: {
       kind,
@@ -868,7 +875,7 @@ export function countdownAt(
       intervalS: est.medianMs / 1000,
       confident: true,
     },
-    holdActive: kind === 'hold' || segOpen,
+    holdActive: kind === 'hold' || kind === 'wait' || segOpen,
   }
 }
 

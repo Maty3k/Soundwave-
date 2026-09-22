@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CONFIG, withConfig } from '../config.ts'
 import type { Config } from '../config.ts'
 import type { Frame, Lock, Peak, PendingBeep } from '../types.ts'
-import { createDetector, detectStep, findPeaks, lockFromPending, pendingBeep, recentPeaks } from './detect.ts'
+import { createDetector, detectStep, findPeaks, lockFromPending, pendingBeep, recentPeaks, slowLockSnrAt } from './detect.ts'
 import { createHunt, huntView } from './hunt.ts'
 import type { DetectorOptions, DetectorState } from './detect.ts'
 import {
@@ -193,18 +193,19 @@ describe('findPeaks', () => {
     const frames = sceneFrames({
       durationS: 0.6,
       seed: 3,
-      tones: [chirp(1000, 30, 0, 600), chirp(8000, 30, 0, 600)],
+      tones: [chirp(1000, 30, 0, 600), chirp(14_000, 30, 0, 600)],
     })
     const [lo, hi] = CONFIG.searchBandHz
+    expect(hi).toBeLessThan(14_000)
     // Control: with the search band widened to include them, both tones are found in every frame.
-    const wide = withConfig({ searchBandHz: [500, 9000] })
+    const wide = withConfig({ searchBandHz: [500, 15_000] })
     for (const f of frames) {
       for (const p of findPeaks(f.db, f.binHz, CONFIG)) {
         expect(p.f0Hz).toBeGreaterThanOrEqual(lo - BW)
         expect(p.f0Hz).toBeLessThanOrEqual(hi + BW)
       }
       const widePeaks = findPeaks(f.db, f.binHz, wide)
-      for (const hz of [1000, 8000]) expect(widePeaks.some((p) => Math.abs(p.f0Hz - hz) < 2)).toBe(true)
+      for (const hz of [1000, 14_000]) expect(widePeaks.some((p) => Math.abs(p.f0Hz - hz) < 2)).toBe(true)
     }
   })
 
@@ -222,7 +223,7 @@ describe('findPeaks', () => {
     for (const f of frames) {
       if (f.tMs <= 500 || f.tMs - windowMs >= 700) continue
       burstFrames++
-      for (const p of findPeaks(f.db, f.binHz, CONFIG)) expect(p.snrDb).toBeLessThan(CONFIG.slowLockSnrDb)
+      for (const p of findPeaks(f.db, f.binHz, CONFIG)) expect(p.snrDb).toBeLessThan(slowLockSnrAt(p.f0Hz, CONFIG))
     }
     expect(burstFrames).toBeGreaterThan(10)
   })
@@ -512,7 +513,10 @@ describe('detectStep: slow lock', () => {
     expect(a!.tOnsetMs).toBeGreaterThan(500)
     expect(a!.tOnsetMs).toBeLessThan(700)
     expect(b!.tOnsetMs).toBeGreaterThan(10_500)
-    expect(lock!.f0Hz).toBeCloseTo((a!.f0Hz + b!.f0Hz) / 2, 9)
+    // SNR-weighted: between the two, and near their mean for two similar chirps.
+    expect(lock!.f0Hz).toBeGreaterThanOrEqual(Math.min(a!.f0Hz, b!.f0Hz))
+    expect(lock!.f0Hz).toBeLessThanOrEqual(Math.max(a!.f0Hz, b!.f0Hz))
+    expect(Math.abs(lock!.f0Hz - (a!.f0Hz + b!.f0Hz) / 2)).toBeLessThan(0.1 * BW)
     expect(Math.abs(lock!.f0Hz - 3120)).toBeLessThan(2)
     expect(lock!.snrDb).toBeGreaterThanOrEqual(CONFIG.slowLockSnrDb)
     expect(lock!.snrDb).toBeLessThan(CONFIG.fastLockSnrDb)
@@ -594,7 +598,10 @@ describe('detectStep: confirmed lock (lockConfirmChirps 2)', () => {
     expect(a!.tOnsetMs).toBeLessThan(700)
     expect(b!.tOnsetMs).toBeGreaterThan(10_500)
     expect(b!.tOnsetMs).toBeLessThan(10_700)
-    expect(lock!.f0Hz).toBeCloseTo((a!.f0Hz + b!.f0Hz) / 2, 9)
+    // SNR-weighted: between the two, and near their mean for two similar chirps.
+    expect(lock!.f0Hz).toBeGreaterThanOrEqual(Math.min(a!.f0Hz, b!.f0Hz))
+    expect(lock!.f0Hz).toBeLessThanOrEqual(Math.max(a!.f0Hz, b!.f0Hz))
+    expect(Math.abs(lock!.f0Hz - (a!.f0Hz + b!.f0Hz) / 2)).toBeLessThan(0.1 * BW)
     expect(Math.abs(lock!.f0Hz - 3120)).toBeLessThan(2)
     expect(lock!.snrDb).toBeGreaterThanOrEqual(CONFIG.fastLockSnrDb)
 
@@ -862,7 +869,7 @@ describe('detectStep: tracker rules', () => {
     const pair = (gapMs: number) => [...handRun(0, 5, at(300, SLOW)), ...handRun(gapMs, 5, at(300.5, SLOW))]
     const lock = runDetector(pair(CONFIG.slowLockGapMs)).lock
     expect(lock?.reason).toBe('slow')
-    expect(lock!.f0Hz).toBeCloseTo(300.25 * BW, 3)
+    expect(Math.abs(lock!.f0Hz / BW - 300.25)).toBeLessThan(0.1) // SNR-weighted, near the mean of 300 and 300.5
     expect(lock!.chirps.map((c) => c.tOnsetMs)).toEqual([0, CONFIG.slowLockGapMs])
     expect(runDetector(pair(CONFIG.slowLockGapMs - HOP)).lock).toBeNull()
   })
@@ -872,8 +879,14 @@ describe('detectStep: tracker rules', () => {
     const pair = (gapMs: number, bin2: number) => [...handRun(0, 5, at(300, SLOW)), ...handRun(gapMs, 5, at(bin2, SLOW))]
     expect(runDetector(pair(5000, 300 + tol - 0.5)).lock?.reason).toBe('slow')
     expect(runDetector(pair(5000, 300 + tol + 0.5)).lock).toBeNull()
-    expect(runDetector(pair(CONFIG.slowLockMemoryMs - 200, 300)).lock?.reason).toBe('slow')
-    expect(runDetector(pair(CONFIG.slowLockMemoryMs + HOP, 300)).lock).toBeNull()
+    // SLOW is a clear sighting: remembered for clearSightingMemoryMs.
+    expect(runDetector(pair(CONFIG.clearSightingMemoryMs - 200, 300)).lock?.reason).toBe('slow')
+    expect(runDetector(pair(CONFIG.clearSightingMemoryMs + HOP, 300)).lock).toBeNull()
+    // A borderline one (enough to count, not clear) only for slowLockMemoryMs.
+    const border = CONFIG.slowLockSnrDb + CONFIG.clearSightingExtraSnrDb / 2
+    const weakPair = (gapMs: number) => [...handRun(0, 5, at(300, border)), ...handRun(gapMs, 5, at(300, border))]
+    expect(runDetector(weakPair(CONFIG.slowLockMemoryMs - 200)).lock?.reason).toBe('slow')
+    expect(runDetector(weakPair(CONFIG.slowLockMemoryMs + HOP)).lock).toBeNull()
   })
 
   it('slow-locks only when both sightings reach slowLockSnrDb', () => {
@@ -882,6 +895,46 @@ describe('detectStep: tracker rules', () => {
     expect(runDetector(weakFirst).lock).toBeNull()
     const weakSecond = [...handRun(0, 5, at(300, SLOW)), ...handRun(5000, 5, at(300, weak))]
     expect(runDetector(weakSecond).lock).toBeNull()
+  })
+
+  it('asks highBandExtraSnrDb more of beeps from highBandFromHz up', () => {
+    const high = Math.round(9000 / BW) // about 9 kHz, in the added upper band
+    expect(high * BW).toBeGreaterThanOrEqual(CONFIG.highBandFromHz)
+    expect(slowLockSnrAt(high * BW, CONFIG)).toBe(CONFIG.slowLockSnrDb + CONFIG.highBandExtraSnrDb)
+    expect(slowLockSnrAt(3120, CONFIG)).toBe(CONFIG.slowLockSnrDb)
+    const enoughLow = CONFIG.slowLockSnrDb + 0.5 // counts at 3 kHz ...
+    const pairAt = (bin: number, snrDb: number): Frame[] => [...handRun(0, 5, at(bin, snrDb)), ...handRun(5000, 5, at(bin, snrDb))]
+    expect(runDetector(pairAt(300, enoughLow)).lock?.reason).toBe('slow')
+    expect(runDetector(pairAt(high, enoughLow)).lock).toBeNull() // ... but not at 9 kHz
+    const enoughHigh = slowLockSnrAt(high * BW, CONFIG) + 0.5
+    const lock = runDetector(pairAt(high, enoughHigh)).lock
+    expect(lock?.reason).toBe('slow')
+    expect(Math.abs(lock!.f0Hz - high * BW)).toBeLessThan(BW)
+  })
+
+  it('lets a faint sighting confirm a clear beep within slowLockMemoryMs only, at the beep\'s own frequency', () => {
+    const clear = CONFIG.slowLockSnrDb + CONFIG.clearSightingExtraSnrDb + 20
+    const faint = CONFIG.slowLockSnrDb + 0.5
+    const pair = (gapMs: number) => [...handRun(0, 5, at(300, clear)), ...handRun(gapMs, 5, at(302, faint))]
+    const early = runDetector(pair(2 * 60_000)).lock
+    expect(early?.reason).toBe('slow')
+    expect(early!.f0Hz / BW).toBeCloseTo(300, 1) // the clear beep's frequency, not the mean (301)
+    expect(runDetector(pair(CONFIG.slowLockMemoryMs + HOP)).lock).toBeNull()
+    expect(runDetector(pair(7 * 60_000)).lock).toBeNull()
+    // Two equal sightings still lock at their mean.
+    const equal = runDetector([...handRun(0, 5, at(300, clear)), ...handRun(7 * 60_000, 5, at(302, clear))]).lock
+    expect(equal!.f0Hz / BW).toBeCloseTo(301, 3)
+  })
+
+  it('confirms a clear beep that comes back 7-10 minutes later, but not a borderline one', () => {
+    expect(CONFIG.clearSightingMemoryMs).toBeGreaterThanOrEqual(10 * 60_000)
+    const pair = (snrDb: number, gapMs: number) => [...handRun(0, 5, at(300, snrDb)), ...handRun(gapMs, 5, at(300.2, snrDb))]
+    const clear = CONFIG.slowLockSnrDb + CONFIG.clearSightingExtraSnrDb
+    const border = clear - 0.5
+    for (const minutes of [7, 8.5, 10]) {
+      expect(runDetector(pair(clear, minutes * 60_000)).lock?.reason, `${minutes} min`).toBe('slow')
+      expect(runDetector(pair(border, minutes * 60_000)).lock, `${minutes} min`).toBeNull()
+    }
   })
 
   it('prefers a fast lock over a slow pair (lockConfirmChirps 1), otherwise the pair locks', () => {
@@ -928,7 +981,7 @@ describe('detectStep: tracker rules', () => {
   describe('memory of sightings closed out of onset order', () => {
     // A long sighting at bin 300 (onset 0 ms, 2 s long) closes after a short one at bin `shortBin`
     // (onset 1000 ms), so the memory holds them in closing order, not onset order.
-    const cfg = withConfig({ slowLockMemoryMs: 5000, sustainedLockMs: 60_000 })
+    const cfg = withConfig({ slowLockMemoryMs: 5000, clearSightingMemoryMs: 5000, sustainedLockMs: 60_000 })
     const longHits = 2000 / HOP + 1
     const shortFrom = 1000 / HOP
     const scene = (shortBin: number, thirdBin: number, thirdMs: number): Frame[] => {
@@ -954,7 +1007,9 @@ describe('detectStep: tracker rules', () => {
       const lock = runDetector(scene(305, 302.5, 4000), cfg).lock
       expect(lock?.reason).toBe('slow')
       expect(lock!.chirps.map((c) => c.tOnsetMs)).toEqual([1000, 4000])
-      expect(lock!.f0Hz).toBeCloseTo(((305 + 302.5) / 2) * BW, 3)
+      // Between the two sightings (SNR-weighted: 305 is interpolated between bins, so a little weaker).
+      expect(lock!.f0Hz / BW).toBeGreaterThan(302.5)
+      expect(lock!.f0Hz / BW).toBeLessThan(305)
     })
   })
 
@@ -1078,6 +1133,16 @@ describe('pendingBeep and lockFromPending', () => {
     expect(beep.heardAtMs).toBe(1000)
   })
 
+  it('shows a clear beep rather than a pair of faint sightings elsewhere', () => {
+    const faint = CONFIG.slowLockSnrDb + 0.5
+    // Two faint sightings at bin 200 (too close together to lock), one clear beep at bin 400.
+    const det = heard([[400, SLOW + 20, 0], [200, faint, 30_000], [200.2, faint, 31_000]])
+    const beep = pendingBeep(det, 32_000, CONFIG)!
+    expect(beep.sightings).toBe(1)
+    expect(beep.f0Hz).toBeCloseTo(400 * BW, 3)
+    expect(lockFromPending(det, 32_000, CONFIG)!.f0Hz).toBeCloseTo(400 * BW, 3)
+  })
+
   it('groups sightings within lockToleranceBins and reports their mean frequency', () => {
     const tol = lockToleranceBins(300 * BW, BW, CONFIG.lockTolPct, CONFIG.lockTolMinBins)
     const near = pendingBeep(heard([[300, SLOW, 0], [300 + tol - 0.4, SLOW + 2, 1000]]), 1500, CONFIG)!
@@ -1090,11 +1155,16 @@ describe('pendingBeep and lockFromPending', () => {
     expect(far.f0Hz).toBeCloseTo(300 * BW, 3)
   })
 
-  it('forgets sightings older than slowLockMemoryMs and never shows ones below slowLockSnrDb', () => {
+  it('forgets borderline sightings after slowLockMemoryMs, clear ones after clearSightingMemoryMs, and never shows ones below slowLockSnrDb', () => {
+    const border = heard([[300, CONFIG.slowLockSnrDb + CONFIG.clearSightingExtraSnrDb / 2, 0]])
+    expect(pendingBeep(border, CONFIG.slowLockMemoryMs, CONFIG)?.sightings).toBe(1)
+    expect(pendingBeep(border, CONFIG.slowLockMemoryMs + 1, CONFIG)).toBeNull()
+    expect(lockFromPending(border, CONFIG.slowLockMemoryMs + 1, CONFIG)).toBeNull()
     const det = heard([[300, SLOW, 0]])
-    expect(pendingBeep(det, CONFIG.slowLockMemoryMs, CONFIG)?.sightings).toBe(1)
-    expect(pendingBeep(det, CONFIG.slowLockMemoryMs + 1, CONFIG)).toBeNull()
-    expect(lockFromPending(det, CONFIG.slowLockMemoryMs + 1, CONFIG)).toBeNull()
+    expect(pendingBeep(det, CONFIG.slowLockMemoryMs + 1, CONFIG)?.sightings).toBe(1)
+    expect(pendingBeep(det, CONFIG.clearSightingMemoryMs, CONFIG)?.sightings).toBe(1)
+    expect(pendingBeep(det, CONFIG.clearSightingMemoryMs + 1, CONFIG)).toBeNull()
+    expect(lockFromPending(det, CONFIG.clearSightingMemoryMs + 1, CONFIG)).toBeNull()
     expect(pendingBeep(heard([[300, CONFIG.slowLockSnrDb + 0.5, 0]]), 1000, CONFIG)?.sightings).toBe(1)
     const weak = heard([[300, CONFIG.slowLockSnrDb - 0.5, 0]])
     expect(pendingBeep(weak, 1000, CONFIG)).toBeNull()
@@ -1176,7 +1246,7 @@ describe('pendingBeep and lockFromPending', () => {
     const first = pendingBeep(det, 500, CONFIG)!
     expect(pendingBeep(det, 900, CONFIG)).toBe(first)
     // Asked about a moment when the sighting is too old: nothing shows, but nothing is forgotten.
-    expect(pendingBeep(det, CONFIG.slowLockMemoryMs + 1, CONFIG)).toBeNull()
+    expect(pendingBeep(det, CONFIG.clearSightingMemoryMs + 1, CONFIG)).toBeNull()
     expect(det.memory).toHaveLength(1)
     const again = pendingBeep(det, 1000, CONFIG)!
     expect(again).toEqual(first)

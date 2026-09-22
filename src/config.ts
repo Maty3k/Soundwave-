@@ -29,7 +29,10 @@ export interface Config {
   readonly frameGapAbortMs: number
 
   // ---- Spectrum and noise floor --------------------------------------------------------------
-  /** Beeps are searched for in this band while listening. */
+  /**
+   * Beeps are searched for in this band while listening. Smoke and CO alarms sit near 3 kHz; some
+   * gadgets and appliance alarms beep far higher, and phone microphones still hear 12 kHz well.
+   */
   readonly searchBandHz: readonly [number, number]
   /** Local noise floor = median of bins within +-floorHalfBins, excluding +-floorGuardBins around the peak. */
   readonly floorHalfBins: number
@@ -85,13 +88,36 @@ export interface Config {
   readonly fastLockSnrDb: number
   /**
    * Two sightings at >= slowLockSnrDb, within lock tolerance of each other and >= slowLockGapMs apart, lock.
-   * Calibration (2 h synthetic noise): noise sightings reach 12 dB about 10 times per hour but 14 dB only
-   * 2.5 times per hour; the loudest noise candidate reached 18.2 dB, below fastLockSnrDb.
+   * Calibration (3 h of synthetic white noise, band 1.5-12 kHz): noise sightings reached 14 dB 5.7 times
+   * per hour below 6 kHz and 9 times per hour from 6 to 12 kHz, 15 dB 1.3 and 2.3 times; the loudest
+   * reached 15.6 dB below 6 kHz and 16.7 dB above. Hence highBandExtraSnrDb (17 dB from 6 kHz up) and
+   * clearSightingExtraSnrDb (only 16 dB and more, or 19 dB from 6 kHz up, are remembered for 15 min):
+   * with them, noise shows no more pending beeps than with the old 6 kHz band and 3 min memory, and
+   * made no false pairs.
    */
   readonly slowLockSnrDb: number
+  /**
+   * From highBandFromHz up, a sighting needs slowLockSnrDb + highBandExtraSnrDb to count (to be
+   * remembered, shown as a pending beep and paired into a lock). The band above it was added for
+   * unusual high beeps; it holds more bins than the band below, and without the margin microphone
+   * noise there alone made a false pending beep every few minutes. Smoke and CO alarms (about 3 kHz)
+   * keep the full sensitivity.
+   */
+  readonly highBandFromHz: number
+  readonly highBandExtraSnrDb: number
   readonly slowLockGapMs: number
-  /** Sightings older than this are forgotten. */
+  /** Sightings older than this are forgotten, unless they are clear (see clearSightingMemoryMs). */
   readonly slowLockMemoryMs: number
+  /**
+   * A clear sighting, at least clearSightingExtraSnrDb above what its frequency needs
+   * (slowLockSnrAt), is remembered this long instead: some alarms beep only every 7-10 minutes, and
+   * the second beep must still find the first one to confirm it ("Use it now" stays offered as
+   * long). Borderline sightings keep the short memory, since microphone noise reaches them several
+   * times an hour and would otherwise pair up into false locks; for the same reason two sightings
+   * more than slowLockMemoryMs apart only lock when both are clear.
+   */
+  readonly clearSightingMemoryMs: number
+  readonly clearSightingExtraSnrDb: number
   /** A stable track that stays present this long locks in live mode (continuous tone). */
   readonly sustainedLockMs: number
   /**
@@ -162,7 +188,13 @@ export interface Config {
   /** A gap within missedGapTolPct % of k x median (k in this list) counts as k - 1 missed chirps. */
   readonly missedGapFactors: readonly number[]
   readonly missedGapTolPct: number
-  /** HOLD STILL starts this long before the expected chirp ... */
+  /**
+   * A long wait: the median interval (or, while the interval is unknown, the time since the last
+   * reading) reaches this. The status bar then says to stay put until the next beep, with the time
+   * since the last one, instead of the chirp countdown, and the clicks stay silent meanwhile.
+   */
+  readonly longWaitS: number
+  /** HOLD STILL starts this long (plus 2 x the interval's MAD, for irregular beeps) before the expected chirp ... */
   readonly holdStartS: number
   /** ... and ends at expected + max(2 * MAD, holdEndMinS) + holdEndExtraS if no chirp arrives. */
   readonly holdEndMinS: number
@@ -294,7 +326,7 @@ export const CONFIG: Config = Object.freeze({
   clipFraction: 0.01,
   frameGapAbortMs: 150,
 
-  searchBandHz: [1500, 6000] as const,
+  searchBandHz: [1500, 12_000] as const,
   floorHalfBins: 24,
   floorGuardBins: 3,
   bandBins: 3,
@@ -316,8 +348,12 @@ export const CONFIG: Config = Object.freeze({
 
   fastLockSnrDb: 20,
   slowLockSnrDb: 14,
+  highBandFromHz: 6000,
+  highBandExtraSnrDb: 3,
   slowLockGapMs: 2000,
   slowLockMemoryMs: 180_000,
+  clearSightingMemoryMs: 900_000,
+  clearSightingExtraSnrDb: 2,
   sustainedLockMs: 2000,
   lockConfirmChirps: 2,
   lockTolPct: 3,
@@ -352,6 +388,7 @@ export const CONFIG: Config = Object.freeze({
   missedGapTolPct: 20,
   holdStartS: 5,
   holdEndMinS: 2,
+  longWaitS: 60,
   holdEndExtraS: 2,
   overdueX: 1.5,
   lostX: 3,

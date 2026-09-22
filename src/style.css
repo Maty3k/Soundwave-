@@ -949,9 +949,17 @@ h1[tabindex='-1']:focus {
 }
 
 .countdown[data-kind='hold'],
-.countdown[data-kind='late'] {
+.countdown[data-kind='late'],
+.countdown[data-kind='wait'] {
   justify-content: center;
   background: var(--accent);
+}
+
+/* Beeps minutes apart: the same "stay put" colour, in the normal size (the line is longer). */
+.countdown[data-kind='wait'] .countdown-text {
+  color: var(--accent-ink);
+  font-weight: 800;
+  text-align: center;
 }
 
 /* accent-ink on accent is about 8:1. */
@@ -992,12 +1000,14 @@ h1[tabindex='-1']:focus {
 }
 
 .countdown[data-kind='hold'] .hearing,
-.countdown[data-kind='late'] .hearing {
+.countdown[data-kind='late'] .hearing,
+.countdown[data-kind='wait'] .hearing {
   color: var(--accent-ink);
 }
 
 .countdown[data-kind='hold'] .hearing-dot,
-.countdown[data-kind='late'] .hearing-dot {
+.countdown[data-kind='late'] .hearing-dot,
+.countdown[data-kind='wait'] .hearing-dot {
   background: var(--accent-ink);
   box-shadow: 0 0 0 4px rgba(27, 15, 3, 0.2);
 }
