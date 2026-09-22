@@ -1109,12 +1109,14 @@ function foundView(handlers: UiHandlers): ScreenView {
   const copyLog = button(F.copyLog, () => handlers.onCopyLog(), 'secondary')
   const keep = button(F.keepHunting, () => handlers.onKeepHunting(), 'secondary')
   keep.setAttribute('aria-describedby', 'found-keep-hint')
+  // A polite live region: it says so when the microphone turns off while this screen is open.
+  const keepHint = h('p', { class: 'found-keep__hint', id: 'found-keep-hint', 'aria-live': 'polite' }, F.keepHint)
   const actions = h(
     'div',
     { class: 'found-actions' },
     button(F.done, () => handlers.onFoundDone(), 'primary'),
     h('div', { class: 'found-more' }, button(F.newHunt, () => handlers.onNewHunt(), 'secondary'), copyLog),
-    h('div', { class: 'found-keep' }, h('p', { class: 'found-keep__hint', id: 'found-keep-hint' }, F.keepHint), keep),
+    h('div', { class: 'found-keep' }, keepHint, keep),
   )
 
   const el = section('found', hero, tip, notes, actions)
@@ -1166,6 +1168,9 @@ function foundView(handlers: UiHandlers): ScreenView {
         drawNotes(summary)
       }
       setHidden(copyLog, state.log.length === 0)
+      // Only on a change, so the live region announces it once.
+      const hint = state.screen.micOff === true ? F.keepHintMicOff : F.keepHint
+      if (keepHint.textContent !== hint) keepHint.textContent = hint
     },
   }
 }

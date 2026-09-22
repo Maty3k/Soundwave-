@@ -312,7 +312,11 @@ export interface FoundNote {
 export interface FoundSummary {
   /** Epoch ms when Found it was tapped. */
   readonly foundAtWallMs: number
-  /** Epoch ms of the hunt's first reading (null if there was none). */
+  /**
+   * Epoch ms the hunt began: its first reading (the chirps heard while locking) or the lock,
+   * whichever came first. A continuous tone logs no reading until a stretch of tone ends, so there
+   * the lock is the start. Null if neither is known.
+   */
   readonly startedAtWallMs: number | null
   readonly f0Hz: number | null
   readonly mode: LockMode | null
@@ -427,8 +431,11 @@ export type Screen =
   | { readonly kind: 'error'; readonly code: ErrorCode }
   /** This device is a listening station for another device's hunt. */
   | { readonly kind: 'station' }
-  /** The hunt ended with Found it: a summary; audio is paused, the hunt can be resumed. */
-  | { readonly kind: 'found' }
+  /**
+   * The hunt ended with Found it: a summary; audio is paused, the hunt can be resumed. micOff: the
+   * microphones were closed after foundMicOffMs on this screen (Keep hunting opens them again).
+   */
+  | { readonly kind: 'found'; readonly micOff?: boolean }
 
 export interface Toast {
   readonly text: string
@@ -509,3 +516,5 @@ export type AppEvent =
   | { readonly type: 'keepHunting' }
   /** found -> idle (the session is over; the log is cleared like after Stop). */
   | { readonly type: 'foundDone' }
+  /** found -> found with micOff (main.ts closed the microphones after foundMicOffMs). */
+  | { readonly type: 'foundMicOff' }

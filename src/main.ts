@@ -7,13 +7,16 @@
  *
  * Found it pauses the hunt without ending the session: the engine stops (no frames, no clicks,
  * no haptics) but the mic, the hunt state, the hub and the extra microphones stay, so Keep hunting
- * can carry on. Done tears the session down like a confirmed Stop; New hunt tears it down and
- * starts a fresh capture in the same click.
+ * can carry on. After CONFIG.foundMicOffMs on that screen the microphones close and the audio
+ * context sleeps; Keep hunting opens them again (the hub and its stations stay connected). Done
+ * tears the session down like a confirmed Stop; New hunt tears it down and starts a fresh capture
+ * in the same click.
  */
 import './style.css'
 import { CONFIG } from './config.ts'
 import type {
   AppState,
+  ErrorCode,
   FoundNote,
   FoundSummary,
   Frame,
@@ -81,6 +84,8 @@ interface Session {
   readonly extraMics: Map<string, ExtraMic>
   /** Other microphones on this device that could be added. */
   inputs: AudioInput[]
+  /** Extra microphones closed on the Found it screen (listener ids); opened again on Keep hunting. */
+  readonly pausedMics: string[]
 }
 
 /** This device used as a listening station for another device's hunt. */
@@ -145,6 +150,8 @@ const LOG_ID_STRIDE = 100_000
 const logId = (readingId: number): number => huntSeq * LOG_ID_STRIDE + readingId
 let lastStationViewMs = 0
 let wasHolding = false
+/** Closes the microphones after CONFIG.foundMicOffMs on the Found it screen. */
+let foundMicTimer: ReturnType<typeof setTimeout> | null = null
 
 const root = document.querySelector<HTMLElement>('#app')
 if (!root) throw new Error('#app missing')
@@ -262,6 +269,7 @@ function beginCapture(via: 'start' | 'retry'): void {
       hub: null,
       extraMics: new Map(),
       inputs: [],
+      pausedMics: [],
     }
     session = s
     watchSession(s)
@@ -325,6 +333,7 @@ function silence(s: Session): void {
 }
 
 function teardown(): void {
+  clearFoundMicOff()
   stopScanSensors()
   const s = session
   session = null
@@ -546,7 +555,46 @@ function onFound(): void {
   // Nothing moves on the summary screen: let it dim (Keep hunting asks for the wake lock again).
   wakeLock.disable()
   store.dispatch({ type: 'found', summary })
+  scheduleFoundMicOff()
   if (st.settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
+}
+
+function scheduleFoundMicOff(): void {
+  clearFoundMicOff()
+  foundMicTimer = setTimeout(micOffOnFound, CONFIG.foundMicOffMs)
+}
+
+function clearFoundMicOff(): void {
+  if (foundMicTimer !== null) clearTimeout(foundMicTimer)
+  foundMicTimer = null
+}
+
+/**
+ * Found it screen for foundMicOffMs: close this device's microphones and let the audio context
+ * sleep, so a forgotten summary does not keep listening. The hunt, the hub and its stations stay.
+ * Extra microphones keep their hub entry (and calibration) and are opened again on Keep hunting.
+ */
+function micOffOnFound(): void {
+  foundMicTimer = null
+  const s = session
+  if (!s || store.get().screen.kind !== 'found') return
+  for (const [id, mic] of s.extraMics) {
+    mic.dispose()
+    if (!s.pausedMics.includes(id)) s.pausedMics.push(id)
+  }
+  s.extraMics.clear()
+  stopMic(s.mic.stream)
+  void s.ctx.suspend().catch(() => undefined)
+  store.dispatch({ type: 'foundMicOff' })
+}
+
+/** Open the extra microphones closed on the Found it screen again; one that is gone is dropped. */
+function restorePausedMics(s: Session): void {
+  for (const id of s.pausedMics.splice(0)) {
+    const deviceId = id.slice('mic:'.length)
+    if (s.inputs.some((i) => i.deviceId === deviceId)) void addExtraMic(deviceId)
+    else onRemoveListener(id)
+  }
 }
 
 /** Summary of the current hunt (since the last lock) from the store and the session. */
@@ -566,9 +614,13 @@ function foundSummary(s: Session, st: AppState): FoundSummary {
   for (const e of entries) readings = Math.max(readings, e.id % LOG_ID_STRIDE)
   const listeners = s.hub && st.stations ? st.stations.listeners.filter((l) => l.status !== 'lost').length : 1
   const mode = view?.mode ?? st.lock?.mode ?? null
+  // The hunt began at its first reading or at the lock, whichever came first: a continuous tone
+  // logs no reading until a stretch of tone ends, so there the lock is the start.
+  const firstMs = entries[0]?.wallMs ?? null
+  const lockMs = st.lock ? wallMs(st.lock.tMs) : null
   return {
     foundAtWallMs: Date.now(),
-    startedAtWallMs: entries[0]?.wallMs ?? null,
+    startedAtWallMs: firstMs === null ? lockMs : lockMs === null ? firstMs : Math.min(firstMs, lockMs),
     f0Hz: view?.f0Hz ?? st.lock?.f0Hz ?? null,
     mode,
     readings,
@@ -596,21 +648,30 @@ function loudestAtEnd(s: Session, mode: LockMode | null): string | null {
 
 /**
  * Not it after all: carry on with the same hunt. Runs inside the click, so a context the browser
- * suspended meanwhile (screen lock on iOS) can be resumed; a dead microphone goes to the paused
+ * suspended meanwhile (screen lock on iOS, or foundMicOffMs) can be resumed. A microphone closed
+ * on the Found it screen is opened again; one that is dead or cannot be opened goes to the paused
  * screen, whose Resume re-opens it.
  */
 function onKeepHunting(): void {
   const s = session
   if (!s || store.get().screen.kind !== 'found') return
+  clearFoundMicOff()
   const resumed = s.ctx.resume().catch(() => undefined)
-  restartEngine(s)
+  const reopening = s.mic.track.readyState !== 'live'
+  const mic: Promise<MicReopen> = reopening ? reopenMic(s) : Promise.resolve('ok')
+  if (!reopening) restartEngine(s)
   void wakeLock.enable()
   store.dispatch({ type: 'keepHunting' })
   // The direction scan was closed on Found it: open it again when its tab is the one shown.
   if (store.get().panel === 'direction') openScan()
-  void Promise.race([resumed, new Promise((r) => setTimeout(r, 600))]).then(() => {
+  const settled = Promise.race([resumed, new Promise((r) => setTimeout(r, 600))])
+  void Promise.all([mic, settled]).then(([res]) => {
     if (session !== s || store.get().screen.kind !== 'hunting') return
-    const healthy = s.ctx.state === 'running' && s.mic.track.readyState === 'live' && !s.mic.track.muted
+    if (res === 'ok') {
+      if (reopening) restartEngine(s)
+      restorePausedMics(s)
+    }
+    const healthy = res === 'ok' && s.ctx.state === 'running' && s.mic.track.readyState === 'live' && !s.mic.track.muted
     if (healthy) return
     silence(s)
     store.dispatch({ type: 'micLost' })
@@ -886,28 +947,43 @@ async function resumeFromPause(): Promise<void> {
     // reported below via state
   }
   if (s.mic.track.readyState !== 'live' || s.mic.track.muted) {
-    const res = await acquireMic()
-    if (session !== s) {
-      if (res.ok) stopMic(res.mic.stream)
-      return
-    }
-    if (!res.ok) {
+    const res = await reopenMic(s)
+    if (res === 'gone') return
+    if (res !== 'ok') {
       teardown()
-      store.dispatch({ type: 'micError', code: res.code })
+      store.dispatch({ type: 'micError', code: res })
       return
     }
-    for (const off of s.unwatch.splice(0)) off()
-    s.engine.dispose()
-    stopMic(s.mic.stream)
-    s.mic = res.mic
-    s.engine = makeEngine(s.ctx, res.mic.stream, s.clicker)
-    watchSession(s)
   }
   if (s.ctx.state !== 'running') return // still blocked; the overlay stays
   restartEngine(s)
+  restorePausedMics(s)
   store.dispatch({ type: 'tick', nowMs: now() })
   store.dispatch({ type: 'resumed' })
   void wakeLock.enable()
+}
+
+/** 'gone': the session ended while the mic was opening; an ErrorCode: it could not be opened. */
+type MicReopen = 'ok' | 'gone' | ErrorCode
+
+/**
+ * Open the microphone again and swap it into the session (its track was stopped or died). On an
+ * error the session is left as it was, for the caller to decide.
+ */
+async function reopenMic(s: Session): Promise<MicReopen> {
+  const res = await acquireMic()
+  if (session !== s) {
+    if (res.ok) stopMic(res.mic.stream)
+    return 'gone'
+  }
+  if (!res.ok) return res.code
+  for (const off of s.unwatch.splice(0)) off()
+  s.engine.dispose()
+  stopMic(s.mic.stream)
+  s.mic = res.mic
+  s.engine = makeEngine(s.ctx, res.mic.stream, s.clicker)
+  watchSession(s)
+  return 'ok'
 }
 
 function restartEngine(s: Session): void {

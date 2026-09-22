@@ -807,6 +807,8 @@ export const FOUND_COPY = {
   newHunt: 'New hunt',
   keepHunting: 'Keep hunting',
   keepHint: 'Not it after all? Carry on where you left off.',
+  /** The same hint once the microphone has been turned off on this screen (foundMicOffMs). */
+  keepHintMicOff: 'The microphone is off now. Not it after all? Keep hunting turns it back on.',
   copyLog: LOG_COPY.copy,
 } as const
 

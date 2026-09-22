@@ -927,6 +927,7 @@ describe('Found it text', () => {
     )
     expect(FOUND_COPY.notesTitle).toBe('Where you were')
     expect(FOUND_COPY.keepHint).toBe('Not it after all? Carry on where you left off.')
+    expect(FOUND_COPY.keepHintMicOff).toBe('The microphone is off now. Not it after all? Keep hunting turns it back on.')
     expect([FOUND_COPY.done, FOUND_COPY.newHunt, FOUND_COPY.keepHunting, FOUND_COPY.copyLog]).toEqual([
       'Done',
       'New hunt',

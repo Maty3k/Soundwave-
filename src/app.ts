@@ -26,6 +26,7 @@ const IDLE: Screen = Object.freeze({ kind: 'idle' })
 const HUNTING: Screen = Object.freeze({ kind: 'hunting' })
 const STATION: Screen = Object.freeze({ kind: 'station' })
 const FOUND: Screen = Object.freeze({ kind: 'found' })
+const FOUND_MIC_OFF: Screen = Object.freeze({ kind: 'found', micOff: true })
 /** Direction scan closed (the only scan state outside the hunting screen). */
 export const SCAN_CLOSED: ScanState = Object.freeze({ open: false, status: 'off', radar: null })
 const NO_LOG: readonly LogEntry[] = Object.freeze([])
@@ -407,6 +408,11 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
       // The session is over, exactly like a confirmed Stop.
       if (screen.kind !== 'found') return state
       return toIdle(state)
+
+    case 'foundMicOff':
+      // Only the screen changes: the summary and the hunt stay for Keep hunting.
+      if (screen.kind !== 'found' || screen.micOff === true) return state
+      return { ...state, screen: FOUND_MIC_OFF }
 
     default:
       // Unknown event (only possible from untyped callers): leave the state alone.

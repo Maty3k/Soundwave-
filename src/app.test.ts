@@ -159,6 +159,7 @@ const S = {
   lockedHeld: { kind: 'locked', sinceMs: T0, held: true },
   station: { kind: 'station' },
   found: { kind: 'found' },
+  foundMicOff: { kind: 'found', micOff: true },
 } as const satisfies Record<string, Screen>
 
 const T1 = NOW + 7_000
@@ -357,6 +358,15 @@ const TABLE: readonly Row[] = [
     expect: { screen: { kind: 'hunting' }, found: null } },
   { name: 'found --foundDone--> idle, session and log cleared like a confirmed stop',
     from: on(S.found, { hunt: HUNT_AT, log: LOG2, panel: 'log' }), event: { type: 'foundDone' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
+  { name: 'found --foundMicOff--> found with the microphone off, summary kept',
+    from: on(S.found, { hunt: HUNT_AT, log: LOG2, found: SUMMARY }), event: { type: 'foundMicOff' },
+    expect: { screen: { kind: 'found', micOff: true }, found: SUMMARY } },
+  { name: 'found (mic off) --keepHunting--> hunting without the summary',
+    from: on(S.foundMicOff, { hunt: HUNT_AT, log: LOG2, found: SUMMARY }), event: { type: 'keepHunting' },
+    expect: { screen: { kind: 'hunting' }, found: null } },
+  { name: 'found (mic off) --foundDone--> idle like a confirmed stop',
+    from: on(S.foundMicOff, { hunt: HUNT_AT, log: LOG2, found: SUMMARY }), event: { type: 'foundDone' },
     expect: { ...CLEARED, screen: { kind: 'idle' } } },
   { name: 'found --start (New hunt)--> requesting, session, log, summary and stations cleared',
     from: on(S.found, { hunt: HUNT_AT, log: LOG2, stations: STATIONS, panel: 'log' }), event: { type: 'start', nowMs: T1 },
@@ -990,6 +1000,27 @@ describe('reduce: Found it', () => {
       expect(reduce(s, { type: 'keepHunting' }, CONFIG), screen.kind).toBe(s)
       expect(reduce(s, { type: 'foundDone' }, CONFIG), screen.kind).toBe(s)
     }
+  })
+
+  it('turns the microphone off only on the Found it screen, and only once', () => {
+    for (const screen of [S.idle, S.requesting, S.listening, S.locked, S.hunting, S.pausedHunting, S.error, S.station, S.foundMicOff]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'foundMicOff' }, CONFIG), JSON.stringify(screen)).toBe(s)
+    }
+  })
+
+  it('Keep hunting after the microphone turned off comes back to the same hunt', () => {
+    const found = reduce(HUNTING_STATE, { type: 'found', summary: SUMMARY }, CONFIG)
+    const off = reduce(found, { type: 'foundMicOff' }, CONFIG)
+    expect(off.screen).toEqual({ kind: 'found', micOff: true })
+    expect(off.found).toBe(SUMMARY)
+    expect(off.hunt).toBe(HUNTING_STATE.hunt)
+    expect(off.log).toBe(LOG2)
+    expect(off.stations).toBe(STATIONS)
+    const back = reduce(off, { type: 'keepHunting' }, CONFIG)
+    expect(back).toEqual(HUNTING_STATE)
+    // Found it a second time starts with the microphone on again.
+    expect(reduce(back, { type: 'found', summary: SUMMARY }, CONFIG).screen).toEqual({ kind: 'found' })
   })
 
   it('is not paused by hiding the page or losing the mic (audio is already paused there)', () => {

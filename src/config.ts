@@ -266,6 +266,8 @@ export interface Config {
   // ---- UI ------------------------------------------------------------------------------------
   readonly noBeepHintMs: number
   readonly lockedBannerMs: number
+  /** On the Found it screen the microphones close after this long (Keep hunting opens them again). */
+  readonly foundMicOffMs: number
   readonly requestHintMs: number
   readonly toastMs: number
   /** Stop asks for confirmation once the hunt has at least this many readings. */
@@ -401,6 +403,7 @@ export const CONFIG: Config = Object.freeze({
 
   noBeepHintMs: 90_000,
   lockedBannerMs: 5000,
+  foundMicOffMs: 120_000,
   requestHintMs: 6000,
   toastMs: 3500,
   stopConfirmMinReadings: 3,
