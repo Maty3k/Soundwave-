@@ -90,10 +90,13 @@ export interface Config {
    * Two sightings at >= slowLockSnrDb, within lock tolerance of each other and >= slowLockGapMs apart, lock.
    * Calibration (3 h of synthetic white noise, band 1.5-12 kHz): noise sightings reached 14 dB 5.7 times
    * per hour below 6 kHz and 9 times per hour from 6 to 12 kHz, 15 dB 1.3 and 2.3 times; the loudest
-   * reached 15.6 dB below 6 kHz and 16.7 dB above. Hence highBandExtraSnrDb (17 dB from 6 kHz up) and
-   * clearSightingExtraSnrDb (only 16 dB and more, or 19 dB from 6 kHz up, are remembered for 15 min):
-   * with them, noise shows no more pending beeps than with the old 6 kHz band and 3 min memory, and
-   * made no false pairs.
+   * reached 15.6 dB below 6 kHz and 16.7 dB above. Through Chrome's audio path noise was more eager:
+   * sightings of 15.1 and 15.3 dB within 4 minutes, and at 14 dB two faint noise sightings paired into
+   * a false lock twice in about 15 minutes of waiting for a beep. Hence 16 dB (was 14): faint sightings
+   * no longer count while listening. A beep that is only just audible still reaches it, since one
+   * FFT bin holds a tone's whole power but only a sliver of the room's noise.
+   * With highBandExtraSnrDb, 19 dB from 6 kHz up; with clearSightingExtraSnrDb, 18 dB (21 dB) to be
+   * remembered for 15 minutes.
    */
   readonly slowLockSnrDb: number
   /**
@@ -347,7 +350,7 @@ export const CONFIG: Config = Object.freeze({
   maxFreqStdBins: 0.5,
 
   fastLockSnrDb: 20,
-  slowLockSnrDb: 14,
+  slowLockSnrDb: 16,
   highBandFromHz: 6000,
   highBandExtraSnrDb: 3,
   slowLockGapMs: 2000,

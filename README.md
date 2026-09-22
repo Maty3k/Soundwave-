@@ -108,7 +108,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
 - The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
-- Soundwave listens for beeps between 1,500 and 12,000 Hz. Above 6,000 Hz a beep has to stand out a little more before it counts, because microphone noise alone would otherwise pass for a beep there now and then.
+- Soundwave listens for beeps between 1,500 and 12,000 Hz. A very faint beep does not count while listening, so that microphone noise is not taken for one; above 6,000 Hz a beep has to stand out a little more still. If nothing shows after a beep you could hear, move closer and wait for the next one.
 - Scanning a pairing QR code needs a camera. Chrome on Android, macOS and ChromeOS use their built-in QR detector; other browsers load a small bundled decoder (qr by Paul Miller) the first time they scan. Without a camera, use Copy code or Share and paste the code on the other device.
 - Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
 
