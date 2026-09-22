@@ -1133,6 +1133,23 @@ describe('beep fingerprint and too-soon filter (filterSounds)', () => {
     expect(count(burst, 'ignored')).toBe(0)
   }, 30_000)
 
+  it('measures shapes from click-free frames only, and leaves a mostly clicked-over sound unjudged', () => {
+    // Clicks over the middle of the beep at 21 s: its shape comes from the other frames.
+    const tainted = (t: number): boolean => t > 21_040 && t < 21_120
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(24, [beep(1), beep(11), beep(21)]), { tainted }))
+    expect(seconds(newReadings(events))).toEqual([1, 11, 21])
+    expect(count(events, 'ignored')).toBe(0)
+    const [clean, , clicked] = hunt.chirps
+    expect(clicked!.taintedFrac).toBeGreaterThan(0)
+    expect(clicked!.shape!.coreFrames).toBeLessThan(clean!.shape!.coreFrames)
+    // Every frame of a clink clicked over: its shape is unknown, so it is not judged by shape.
+    const mostly = createHunt(lockAt(), CONFIG, FILTER)
+    const all = (t: number): boolean => t > 5_900 && t < 7_200
+    feed(mostly, framesOf(samplesOf(8, [beep(1), clink(6)]), { tainted: all }))
+    expect(mostly.chirps.find((c) => c.tOnsetMs > 5_000)?.shape).toBeUndefined()
+  }, 30_000)
+
   it('knows the rhythm from a confident interval or one long gap', () => {
     const longMs = 8 * 60_000
     const slow = createHunt(lockAt({ chirps: [chirpAt(0, -70), chirpAt(longMs, -70)] }), CONFIG, FILTER)

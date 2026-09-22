@@ -87,7 +87,10 @@ interface Segment {
   taintedFrames: number
   /** p.binF of frames with snr >= onsetSnrDb (bounded; see strongCap). */
   strongBinF: number[]
-  /** Band level and time of every frame (bounded; see strongCap), for the chirp's shape. */
+  /**
+   * Band level and time of every frame without a click in it (bounded; see strongCap), for the
+   * chirp's shape: a click adds its own energy and would bend the shape.
+   */
   levels: number[]
   times: number[]
   /** Aborted by a frame gap: keeps tracking on/off (activity) but never becomes a Chirp. */
@@ -421,7 +424,7 @@ function pushFloor(state: HuntState, floorDb: number, cfg: Config): void {
 
 function accumulate(seg: Segment, f: SegFrame, cfg: Config): void {
   seg.frames++
-  if (seg.levels.length < strongCap(cfg)) {
+  if (!f.tainted && seg.levels.length < strongCap(cfg)) {
     seg.levels.push(f.levelDb)
     seg.times.push(f.tMs)
   }
@@ -552,7 +555,8 @@ function closeSegment(state: HuntState, seg: Segment, cfg: Config, events: HuntE
     f0Hz: seg.peakBinF * seg.peakBinHz,
     clipped: seg.clipped,
     taintedFrac: seg.frames > 0 ? seg.taintedFrames / seg.frames : 0,
-    ...withShape(soundShape(seg.levels, seg.times, seg.peakDb - seg.noiseDb, cfg)),
+    // Too many frames with clicks in them: the shape is unknown (the fingerprint does not judge it).
+    ...withShape(seg.levels.length * 2 >= seg.frames ? soundShape(seg.levels, seg.times, seg.peakDb - seg.noiseDb, cfg) : null),
   }
   const reads = !seg.noReading && state.mode === 'chirp'
   if (reads && state.filterSounds) {
