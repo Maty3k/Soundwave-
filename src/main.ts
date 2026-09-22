@@ -4,10 +4,28 @@
  * A requestAnimationFrame loop pushes snapshots (hunt, radar, stations, station mode) and a clock
  * tick into the store, drives clicks and haptics, and renders. All decisions live in the pure
  * modules (src/dsp, src/app.ts) and the runtimes (hub, station, extra mics).
+ *
+ * Found it pauses the hunt without ending the session: the engine stops (no frames, no clicks,
+ * no haptics) but the mic, the hunt state, the hub and the extra microphones stay, so Keep hunting
+ * can carry on. Done tears the session down like a confirmed Stop; New hunt tears it down and
+ * starts a fresh capture in the same click.
  */
 import './style.css'
 import { CONFIG } from './config.ts'
-import type { AppState, Frame, HuntEvent, HuntPanel, Lock, LogEntry, MicDiag, PendingBeep, Reading } from './types.ts'
+import type {
+  AppState,
+  FoundNote,
+  FoundSummary,
+  Frame,
+  HuntEvent,
+  HuntPanel,
+  Lock,
+  LockMode,
+  LogEntry,
+  MicDiag,
+  PendingBeep,
+  Reading,
+} from './types.ts'
 import { createStore, initialState } from './app.ts'
 import { mountUi } from './ui.ts'
 import { LOG_COPY, logAsText, STATIONS_COPY, TEXT } from './copy.ts'
@@ -33,6 +51,7 @@ import { StationHub } from './hub.ts'
 import { StationRuntime } from './stationMode.ts'
 import { ExtraMic, listAudioInputs, type AudioInput } from './extraMics.ts'
 import { qrScanSupported } from './net/qr.ts'
+import { registerServiceWorker } from './pwa.ts'
 
 declare global {
   interface Window {
@@ -77,6 +96,8 @@ const now = (): number => performance.now()
 const wallMs = (tMs: number): number => Date.now() - (performance.now() - tMs)
 const flags = readQueryFlags(location.search)
 const caps = detectCapabilities()
+// Offline mode: precache the build (production only; ?nosw removes it again).
+registerServiceWorker()
 const store = createStore(initialState(caps, loadSettings(), flags.debug, now()), CONFIG)
 if (flags.debug) window.__soundwave = { state: () => store.get() }
 
@@ -147,6 +168,13 @@ const ui = mountUi(
     onUseNow,
     onRelistenConfirm,
     onResetBest,
+    onFound,
+    onKeepHunting,
+    onFoundDone: () => {
+      store.dispatch({ type: 'foundDone' })
+      teardownIfIdle()
+    },
+    onNewHunt,
     onResume: () => void resumeFromPause(),
     onBack: () => store.dispatch({ type: 'back' }),
     onReload: () => location.reload(),
@@ -182,7 +210,11 @@ const ui = mountUi(
 
 // ---- Capture lifecycle (hunting device) ---------------------------------------------------------
 
-/** Must run synchronously inside the click handler: the AudioContext is created and resumed here. */
+/**
+ * Must run synchronously inside the click handler: the AudioContext is created and resumed here.
+ * Runs from the landing (Start), the error card (Try again) and, once its session is torn down,
+ * the Found it screen (New hunt).
+ */
 function beginCapture(via: 'start' | 'retry'): void {
   if (session || station || store.get().screen.kind === 'requesting') return
   const seq = ++captureSeq
@@ -496,6 +528,100 @@ function onResetBest(): void {
   store.dispatch({ type: 'resetBest' })
   store.dispatch({ type: 'hunt', view: huntView(s.hunt, now(), CONFIG) })
   toast(TEXT.resetBest)
+}
+
+// ---- Found it -----------------------------------------------------------------------------------
+
+/**
+ * The beep is found: sum up this hunt, then pause the audio (like a hidden page, but without the
+ * paused screen) and show the summary. The session stays for Keep hunting.
+ */
+function onFound(): void {
+  const s = session
+  const st = store.get()
+  if (!s || st.screen.kind !== 'hunting') return
+  const summary = foundSummary(s, st)
+  closeScan()
+  silence(s)
+  // Nothing moves on the summary screen: let it dim (Keep hunting asks for the wake lock again).
+  wakeLock.disable()
+  store.dispatch({ type: 'found', summary })
+  if (st.settings.haptics) haptics.pulse(CONFIG.hapticReadingPattern)
+}
+
+/** Summary of the current hunt (since the last lock) from the store and the session. */
+function foundSummary(s: Session, st: AppState): FoundSummary {
+  // Log entry ids are huntSeq * LOG_ID_STRIDE + reading id: this hunt's entries, oldest first.
+  const entries = st.log.filter((e) => Math.floor(e.id / LOG_ID_STRIDE) === huntSeq)
+  const view = s.hunt ? huntView(s.hunt, now(), CONFIG) : st.hunt
+  const notes: FoundNote[] = []
+  for (const e of entries) {
+    const note = e.note.replace(/\s+/g, ' ').trim()
+    if (note !== '') notes.push({ wallMs: e.wallMs, note, verdict: e.verdict, pct: e.pct })
+  }
+  // Reading ids count up from 1 in every hunt, so the highest one is the number of readings, also
+  // when the view keeps only the last config.readingsKept (none after Start over here) and the log
+  // has dropped its oldest lines.
+  let readings = Math.max(view?.readings.length ?? 0, view?.last?.id ?? 0, entries.length)
+  for (const e of entries) readings = Math.max(readings, e.id % LOG_ID_STRIDE)
+  const listeners = s.hub && st.stations ? st.stations.listeners.filter((l) => l.status !== 'lost').length : 1
+  const mode = view?.mode ?? st.lock?.mode ?? null
+  return {
+    foundAtWallMs: Date.now(),
+    startedAtWallMs: entries[0]?.wallMs ?? null,
+    f0Hz: view?.f0Hz ?? st.lock?.f0Hz ?? null,
+    mode,
+    readings,
+    bestLevelDb: view?.bestDb ?? null,
+    notes,
+    loudestListener: loudestAtEnd(s, mode),
+    listeners: Math.max(1, listeners),
+  }
+}
+
+/**
+ * The listener that heard the beep loudest at the end: the last compared chirp. In live mode (a
+ * continuous tone) the held levels of this moment come first, as on the Stations panel: the last
+ * compared chirp may be from before the switch to live.
+ */
+function loudestAtEnd(s: Session, mode: LockMode | null): string | null {
+  const hub = s.hub
+  if (!hub) return null
+  if (mode !== 'live') return hub.latestLoudestName()
+  const c = hub.view([], canScan).comparison
+  if (c === null || c.loudestId === null) return null
+  const id = c.loudestId
+  return c.ranking.find((e) => e.id === id)?.name ?? null
+}
+
+/**
+ * Not it after all: carry on with the same hunt. Runs inside the click, so a context the browser
+ * suspended meanwhile (screen lock on iOS) can be resumed; a dead microphone goes to the paused
+ * screen, whose Resume re-opens it.
+ */
+function onKeepHunting(): void {
+  const s = session
+  if (!s || store.get().screen.kind !== 'found') return
+  const resumed = s.ctx.resume().catch(() => undefined)
+  restartEngine(s)
+  void wakeLock.enable()
+  store.dispatch({ type: 'keepHunting' })
+  // The direction scan was closed on Found it: open it again when its tab is the one shown.
+  if (store.get().panel === 'direction') openScan()
+  void Promise.race([resumed, new Promise((r) => setTimeout(r, 600))]).then(() => {
+    if (session !== s || store.get().screen.kind !== 'hunting') return
+    const healthy = s.ctx.state === 'running' && s.mic.track.readyState === 'live' && !s.mic.track.muted
+    if (healthy) return
+    silence(s)
+    store.dispatch({ type: 'micLost' })
+  })
+}
+
+/** Another beep: end this session and start listening again, all inside the click. */
+function onNewHunt(): void {
+  if (store.get().screen.kind !== 'found') return
+  teardown()
+  beginCapture('start')
 }
 
 function activeExclusions(): number[] {
@@ -844,9 +970,12 @@ function updatePending(s: Session, t: number): void {
 function updateStations(s: Session, t: number): void {
   const hub = s.hub
   if (!hub) return
-  const view = store.get().hunt
-  // Self live level for the live comparison, at the stations' report rate.
-  if (view?.mode === 'live' && view.live && t - lastLiveReportMs >= CONFIG.stationLevelReportMs) {
+  const state = store.get()
+  const view = state.hunt
+  // Self live level for the live comparison, at the stations' report rate. Only while the hunt
+  // runs: a paused or found hunt keeps an old view whose level is no longer measured.
+  const running = state.screen.kind === 'hunting' || state.screen.kind === 'locked'
+  if (running && view?.mode === 'live' && view.live && t - lastLiveReportMs >= CONFIG.stationLevelReportMs) {
     lastLiveReportMs = t
     hub.liveLevel('self', view.live.levelDb, view.live.clipped)
   }

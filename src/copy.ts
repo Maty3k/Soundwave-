@@ -10,6 +10,7 @@ import type {
   Chirp,
   Countdown,
   ErrorCode,
+  FoundSummary,
   HuntPanel,
   HuntView,
   Lock,
@@ -101,6 +102,8 @@ export const COPY = {
     history: 'Recent readings',
     resetBest: 'Start over here',
     relisten: 'Listen again',
+    /** Ends the hunt with the Found it summary (the positive action of the bottom bar). */
+    found: 'Found it',
     stop: 'Stop',
     tabsLabel: 'Hunting views',
     tabs: {
@@ -787,6 +790,92 @@ export function logAsText(log: readonly LogEntry[], f0Hz: number | null): string
     lines.push(`${formatClockTime(entry.wallMs)} ${logEntrySummary(entry, log[i - 1] ?? null)}${noteText}`)
   })
   return lines.join('\n')
+}
+
+// ---- Found it ------------------------------------------------------------------------------------
+
+/** Static strings of the Found it screen (the hunt's summary once the beep is found). */
+export const FOUND_COPY = {
+  title: 'Found it!',
+  /** What the summary line calls the sound: a chirping beep, or a continuous tone (live mode). */
+  beep: 'beep',
+  tone: 'tone',
+  tipTitle: 'Smoke or CO alarm?',
+  tip: 'A low-battery chirp stops once you put in a fresh battery. Press its test button afterwards to check it still works.',
+  notesTitle: 'Where you were',
+  done: 'Done',
+  newHunt: 'New hunt',
+  keepHunting: 'Keep hunting',
+  keepHint: 'Not it after all? Carry on where you left off.',
+  copyLog: LOG_COPY.copy,
+} as const
+
+/**
+ * How long a hunt took, in words: seconds only under a minute ('45 s'), minutes and seconds under
+ * an hour ('6 min 20 s', '6 min' on the minute), hours and minutes beyond ('1 h 5 min', '2 h').
+ * Whole seconds, rounded down; '' for a negative or non-finite duration.
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const total = Math.floor(ms / 1000)
+  if (total < 60) return `${total} s`
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  if (minutes < 60) return seconds === 0 ? `${minutes} min` : `${minutes} min ${seconds} s`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`
+}
+
+/** Upper-case first letter ('found in 2 min' -> 'Found in 2 min'). */
+function capitalize(text: string): string {
+  return text === '' ? text : text[0]!.toUpperCase() + text.slice(1)
+}
+
+/**
+ * Parts of the Found it summary line, each left out when unknown: the frequency with what was
+ * heard ('3,100 Hz beep', or 'tone' in live mode), how long since the hunt's first reading
+ * ('found in 6 min 20 s') and the chirps heard ('14 chirps', not in live mode, where readings are
+ * stretches of a continuous tone). The first part starts with a capital.
+ */
+export function foundSummaryParts(summary: FoundSummary): string[] {
+  const parts: string[] = []
+  const f0 = summary.f0Hz
+  if (f0 !== null && Number.isFinite(f0) && f0 > 0) {
+    parts.push(`${formatHz(f0)} ${summary.mode === 'live' ? FOUND_COPY.tone : FOUND_COPY.beep}`)
+  }
+  const started = summary.startedAtWallMs
+  if (started !== null && Number.isFinite(started) && Number.isFinite(summary.foundAtWallMs) && summary.foundAtWallMs >= started) {
+    parts.push(`found in ${formatDuration(summary.foundAtWallMs - started)}`)
+  }
+  const n = Number.isFinite(summary.readings) ? Math.round(summary.readings) : 0
+  if (summary.mode !== 'live' && n > 0) parts.push(n === 1 ? '1 chirp' : `${groupThousands(n)} chirps`)
+  if (parts.length > 0) parts[0] = capitalize(parts[0]!)
+  return parts
+}
+
+/** The Found it summary line: '3,100 Hz beep · found in 6 min 20 s · 14 chirps'; '' when nothing is known. */
+export function foundSummaryLine(summary: FoundSummary): string {
+  return foundSummaryParts(summary).join(LOG_COPY.sep)
+}
+
+/**
+ * Parts of the listeners line: the listener that heard the last compared chirp loudest ('Loudest
+ * station at the end: Kitchen') and how many listeners took part when more than this device
+ * ('Compared on 3 devices'). Empty when neither applies.
+ */
+export function foundListenersParts(summary: FoundSummary): string[] {
+  const parts: string[] = []
+  const loudest = summary.loudestListener?.trim() ?? ''
+  if (loudest !== '') parts.push(`Loudest station at the end: ${loudest}`)
+  const n = Number.isFinite(summary.listeners) ? Math.round(summary.listeners) : 0
+  if (n > 1) parts.push(`Compared on ${n} devices`)
+  return parts
+}
+
+/** 'Loudest station at the end: Kitchen · Compared on 3 devices', either part alone, or ''. */
+export function foundListenersLine(summary: FoundSummary): string {
+  return foundListenersParts(summary).join(LOG_COPY.sep)
 }
 
 // ---- Stations: extra microphones and other devices -----------------------------------------------

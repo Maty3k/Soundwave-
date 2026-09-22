@@ -4,7 +4,7 @@
 
 Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, and a single microphone cannot hear direction, so Soundwave plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around. On phones, a direction scan adds a radar that uses your body as a shield to show the loudest side.
 
-Everything runs in your browser. Audio is analysed live and never recorded, stored or uploaded. After the page has loaded it talks to no server; the only network traffic is between your own devices when you pair listening stations (see below), and even then only loudness numbers are exchanged, never audio.
+Everything runs in your browser, and after the first visit it also works offline: the app keeps its own files on the device, so an installed Soundwave opens without a connection. Audio is analysed live and never recorded, stored or uploaded. After the page has loaded it talks to no server; the only network traffic is between your own devices when you pair listening stations (see below), and even then only loudness numbers are exchanged, never audio.
 
 ## How to use it
 
@@ -12,6 +12,7 @@ Everything runs in your browser. Audio is analysed live and never recorded, stor
 2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous beep locks after about 2 seconds. If you are sure after the first chirp, tap **Use it now**. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
 3. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
 4. Geiger-style clicks, plus vibration on Android phones, speed up as you get closer, so you can watch where you walk instead of the screen. They stop when it is time to hold still.
+5. When you have found it, tap **Found it**. You get a summary (frequency, how long it took, how many chirps, your notes and, with stations, which one heard it loudest) and a tip for smoke alarms. **Keep hunting** takes you back if it was not the right thing after all.
 
 Continuous tones and rapid beep trains switch to a live meter automatically. Room acoustics make small moves unreliable at these frequencies, so trust trends over several chirps and move a few metres at a time. **VERY HOT** means the microphone is overloaded: you are probably within arm's reach. Smoke detectors live on ceilings.
 
@@ -101,6 +102,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - `?debug` shows a diagnostics panel: microphone settings, sample rates, locked frequency, live level, noise floor, SNR and the last chirps.
 - `?warmth=1` forces the maximum click rate while hunting. It is used to check that the app's own clicks do not register as chirps.
+- `?nosw` unregisters the offline service worker (useful when debugging caching).
 
 ### Known limits
 
@@ -136,6 +138,10 @@ src/
 tools/make-chirp-wav.mjs   test-signal generator
 docs/PLAN.md               design plan and decisions
 ```
+
+## Offline mode
+
+`public/sw.js` is a small hand-written service worker. At build time `tools/sw-precache-plugin.mjs` writes the list of built files and a content hash into it, so every deploy gets a new cache and the old one is removed. The page itself is fetched from the network first (falling back to the cached copy offline), the hashed assets come from the cache. The worker is registered only in production builds, and the test signals under `dev/` are never cached.
 
 ## Deployment
 

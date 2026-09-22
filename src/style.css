@@ -282,6 +282,31 @@ h1[tabindex='-1']:focus {
   padding-inline: 8px;
 }
 
+/*
+ * Hunting: Listen again, Found it (the positive action, filled) and Stop share one row. Each gets
+ * its label's width plus an equal share of the rest, so all three stay on one line at 360 px; the
+ * filled button keeps the bar's 48 px height.
+ */
+.bottombar .bar-relisten,
+.bottombar .bar-found,
+.bottombar .bar-stop {
+  flex: 1 1 auto;
+}
+
+.bottombar .btn-primary {
+  width: auto;
+  min-height: 48px;
+  font-size: 1rem;
+}
+
+/*
+ * Keyboard focus (and scrollIntoView) keeps a control of the hunting panels clear of the sticky bar:
+ * the note field of the oldest log line would otherwise sit right under it.
+ */
+.hunting .panels :is(input, button, select, textarea) {
+  scroll-margin-bottom: calc(88px + env(safe-area-inset-bottom));
+}
+
 /* ---- Cards and badges -------------------------------------------------------------------------- */
 
 .card {
@@ -1314,6 +1339,377 @@ h1[tabindex='-1']:focus {
 
 .error .card {
   max-width: 520px;
+}
+
+/* ---- Found it ---------------------------------------------------------------------------------- */
+
+/*
+ * Check mark, title and the hunt in one line; the battery tip; the notes ("Where you were"); then
+ * Done, New hunt with Copy log, and Keep hunting beside its hint. One column centred in the
+ * height; landscape phones put the actions in a column of their own.
+ */
+.found {
+  justify-content: center;
+  gap: 16px;
+}
+
+.found-hero {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.found-mark {
+  width: 72px;
+  height: 72px;
+  margin-bottom: 2px;
+  color: var(--heat-1);
+}
+
+.found-mark__dot {
+  fill: var(--accent);
+}
+
+.found-mark__tick {
+  stroke: var(--accent-ink);
+}
+
+/* A short celebration: the check pops in, the arcs ripple out (none with reduced motion). */
+.found-mark__check {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: found-pop 0.45s cubic-bezier(0.2, 0.8, 0.3, 1.25) both;
+}
+
+.found-mark__arcs {
+  transform-box: view-box;
+  transform-origin: 32px 32px;
+  animation: found-ripple 0.6s 0.15s ease-out both;
+}
+
+@keyframes found-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes found-ripple {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.found-title {
+  font-size: clamp(34px, 10vw, 48px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.found-summary {
+  font-size: 1.0625rem;
+  font-weight: 650;
+  text-wrap: balance;
+}
+
+.found-listeners {
+  color: var(--muted);
+  font-size: 0.95rem;
+  text-wrap: balance;
+}
+
+/*
+ * Whole parts ('found in 6 min 20 s'): a line breaks only between them. A part wider than the
+ * line (a long station name) wraps inside instead of running off the screen.
+ */
+.found-part {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.found-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--radius-sm);
+  background: var(--info-bg);
+  color: #C2E4EE;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.found-tip .icon {
+  width: 22px;
+  height: 22px;
+  margin-top: 0;
+  color: var(--info);
+}
+
+.found-tip strong {
+  color: var(--text);
+}
+
+.found-notes {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.found-notes__title {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+/* A long list scrolls inside, so the actions stay on screen. */
+.found-notes__list {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  max-height: max(108px, 26vh);
+  max-height: max(108px, 26dvh);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  scrollbar-color: var(--line) transparent;
+  scrollbar-width: thin;
+}
+
+.found-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+  min-width: 0;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.found-note__time {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Same colours as the hero verdict, always next to the verdict word itself. */
+.found-note__verdict {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.found-note__verdict[data-verdict='warmer'] {
+  color: var(--warmer);
+}
+
+.found-note__verdict[data-verdict='colder'] {
+  color: var(--colder);
+}
+
+.found-note__verdict[data-verdict='same'] {
+  color: var(--same);
+}
+
+.found-note__verdict[data-verdict='max'] {
+  color: var(--hot);
+}
+
+/* Beside the verdict when it fits, else on a line of its own (never squeezed into a narrow column). */
+.found-note__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.found-actions {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+/* New hunt and Copy log side by side (New hunt alone when the log is empty). */
+.found-more {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 10px;
+}
+
+/* The way back sits beside its reason, so it reads as the exception, not a third choice. */
+.found-keep {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.found-keep__hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.found-keep .btn {
+  flex: none;
+}
+
+/*
+ * Portrait: the screen is at most as tall as the window, and the notes give way first. Two notes or
+ * more scroll inside the list (down to the title and about one and a half notes) before the page
+ * scrolls, so a long listeners line or wrapped notes still leave the actions on screen. Only when
+ * even that is not enough does the page scroll. Centred with auto margins, which (unlike
+ * justify-content: center) never push the top of an overflowing screen out of reach.
+ */
+@media (orientation: portrait) {
+  .found {
+    max-height: calc(100vh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
+    max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom)));
+    justify-content: flex-start;
+  }
+
+  .found > :first-child {
+    margin-top: auto;
+  }
+
+  .found > :last-child {
+    margin-bottom: auto;
+  }
+
+  .found-notes {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .found-notes__list {
+    flex: 0 1 auto;
+    min-height: 0;
+  }
+
+  .found-notes:has(li + li) {
+    min-height: 5.5rem;
+  }
+}
+
+/*
+ * Short phones held upright (360 x 640): the mark moves beside the title and the gaps tighten, so
+ * three notes and all the actions fit without scrolling.
+ */
+@media (orientation: portrait) and (max-height: 700px) {
+  .found {
+    gap: 12px;
+  }
+
+  /* A wrapping row, not a grid: the long summary line must not widen the mark's and title's cells. */
+  .found-hero {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 4px;
+  }
+
+  .found-mark {
+    width: 44px;
+    height: 44px;
+    margin: 0;
+  }
+
+  .found-summary,
+  .found-listeners {
+    flex-basis: 100%;
+  }
+
+  .found-title {
+    font-size: clamp(30px, 9vw, 40px);
+  }
+
+  .found-tip {
+    padding: 10px 12px;
+    font-size: 0.9rem;
+  }
+}
+
+/*
+ * Landscape phones and short laptop windows: two columns. The hunt and the notes on the left; the
+ * tip and the actions on the right.
+ */
+@media (orientation: landscape) and (max-height: 700px) and (min-width: 600px) {
+  .found {
+    display: grid;
+    grid-template-areas:
+      'hero tip'
+      'notes actions';
+    grid-template-rows: auto auto;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    align-content: center;
+    align-items: start;
+    gap: 12px 24px;
+  }
+
+  .found-hero {
+    grid-area: hero;
+    grid-template-columns: auto minmax(0, 1fr);
+    justify-items: start;
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 2px;
+    text-align: left;
+  }
+
+  .found-mark {
+    width: 40px;
+    height: 40px;
+    margin: 0;
+  }
+
+  .found-title {
+    font-size: 32px;
+  }
+
+  .found-summary,
+  .found-listeners {
+    grid-column: 1 / -1;
+  }
+
+  .found-tip {
+    grid-area: tip;
+    padding: 8px 12px;
+    font-size: 0.875rem;
+  }
+
+  .found-notes {
+    grid-area: notes;
+  }
+
+  .found-notes__list {
+    max-height: max(64px, calc(100vh - 190px));
+    max-height: max(64px, calc(100dvh - 190px));
+  }
+
+  .found-actions {
+    grid-area: actions;
+  }
 }
 
 /* ---- Confirmation dialog (Stop, Listen again) -------------------------------------------------- */

@@ -60,6 +60,15 @@ import {
   stationTitle,
 } from './copy.ts'
 import type { Comparison, ComparisonEntry, ListenerView, StationStep } from './types.ts'
+import {
+  FOUND_COPY,
+  formatDuration,
+  foundListenersLine,
+  foundListenersParts,
+  foundSummaryLine,
+  foundSummaryParts,
+} from './copy.ts'
+import type { FoundSummary } from './types.ts'
 
 // ---- Fixtures ------------------------------------------------------------------------------------
 
@@ -827,5 +836,102 @@ describe('stations text', () => {
     const all = JSON.stringify(STATIONS_COPY)
     expect(all).toContain('Wi\u2011Fi')
     expect(all).not.toContain('Wi-Fi')
+  })
+})
+
+// ---- Found it ------------------------------------------------------------------------------------
+
+describe('Found it text', () => {
+  const T = 1_758_000_000_000
+  const SUMMARY: FoundSummary = {
+    foundAtWallMs: T + 380_000,
+    startedAtWallMs: T,
+    f0Hz: 3100.4,
+    mode: 'chirp',
+    readings: 14,
+    bestLevelDb: -41,
+    notes: [],
+    loudestListener: null,
+    listeners: 1,
+  }
+
+  it('formats a duration: seconds only under a minute, then minutes, hours for very long hunts', () => {
+    expect(formatDuration(0)).toBe('0 s')
+    expect(formatDuration(999)).toBe('0 s')
+    expect(formatDuration(45_900)).toBe('45 s')
+    expect(formatDuration(59_999)).toBe('59 s')
+    expect(formatDuration(60_000)).toBe('1 min')
+    expect(formatDuration(380_000)).toBe('6 min 20 s')
+    expect(formatDuration(3_599_999)).toBe('59 min 59 s')
+    expect(formatDuration(3_600_000)).toBe('1 h')
+    expect(formatDuration(3_900_000 + 59_000)).toBe('1 h 5 min')
+    expect(formatDuration(7_200_000 + 30_000)).toBe('2 h')
+    expect(formatDuration(30 * 3_600_000)).toBe('30 h')
+  })
+
+  it('gives no duration for a negative or non-finite time', () => {
+    expect(formatDuration(-1)).toBe('')
+    expect(formatDuration(Number.NaN)).toBe('')
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe('')
+  })
+
+  it('sums up the hunt: frequency, time and chirps', () => {
+    expect(foundSummaryLine(SUMMARY)).toBe('3,100 Hz beep · found in 6 min 20 s · 14 chirps')
+    expect(foundSummaryParts(SUMMARY)).toEqual(['3,100 Hz beep', 'found in 6 min 20 s', '14 chirps'])
+    expect(foundSummaryLine({ ...SUMMARY, readings: 1, foundAtWallMs: T + 42_000 })).toBe('3,100 Hz beep · found in 42 s · 1 chirp')
+    expect(foundSummaryLine({ ...SUMMARY, readings: 1_204, foundAtWallMs: T + 4_000_000 })).toBe(
+      '3,100 Hz beep · found in 1 h 6 min · 1,204 chirps',
+    )
+  })
+
+  it('leaves out what is unknown, starting with a capital', () => {
+    expect(foundSummaryLine({ ...SUMMARY, f0Hz: null })).toBe('Found in 6 min 20 s · 14 chirps')
+    expect(foundSummaryLine({ ...SUMMARY, startedAtWallMs: null })).toBe('3,100 Hz beep · 14 chirps')
+    expect(foundSummaryLine({ ...SUMMARY, readings: 0 })).toBe('3,100 Hz beep · found in 6 min 20 s')
+    expect(foundSummaryLine({ ...SUMMARY, f0Hz: null, startedAtWallMs: null })).toBe('14 chirps')
+    expect(foundSummaryLine({ ...SUMMARY, f0Hz: null, startedAtWallMs: null, readings: 0 })).toBe('')
+    expect(foundSummaryParts({ ...SUMMARY, f0Hz: null, startedAtWallMs: null, readings: 0 })).toEqual([])
+  })
+
+  it('never shows a broken number', () => {
+    expect(foundSummaryLine({ ...SUMMARY, f0Hz: Number.NaN })).toBe('Found in 6 min 20 s · 14 chirps')
+    expect(foundSummaryLine({ ...SUMMARY, f0Hz: 0 })).toBe('Found in 6 min 20 s · 14 chirps')
+    // A clock that went backwards (the first reading after the tap) has no duration.
+    expect(foundSummaryLine({ ...SUMMARY, startedAtWallMs: T + 400_000 })).toBe('3,100 Hz beep · 14 chirps')
+    expect(foundSummaryLine({ ...SUMMARY, readings: Number.NaN })).toBe('3,100 Hz beep · found in 6 min 20 s')
+    expect(foundSummaryLine({ ...SUMMARY, readings: -2 })).toBe('3,100 Hz beep · found in 6 min 20 s')
+  })
+
+  it('calls a continuous tone a tone and does not count its readings as chirps', () => {
+    expect(foundSummaryLine({ ...SUMMARY, mode: 'live' })).toBe('3,100 Hz tone · found in 6 min 20 s')
+    expect(foundSummaryLine({ ...SUMMARY, mode: null })).toBe('3,100 Hz beep · found in 6 min 20 s · 14 chirps')
+  })
+
+  it('names the loudest listener and how many devices compared', () => {
+    expect(foundListenersLine(SUMMARY)).toBe('')
+    expect(foundListenersParts(SUMMARY)).toEqual([])
+    expect(foundListenersLine({ ...SUMMARY, loudestListener: 'Kitchen' })).toBe('Loudest station at the end: Kitchen')
+    expect(foundListenersLine({ ...SUMMARY, listeners: 3 })).toBe('Compared on 3 devices')
+    expect(foundListenersLine({ ...SUMMARY, loudestListener: ' Kitchen ', listeners: 3 })).toBe(
+      'Loudest station at the end: Kitchen · Compared on 3 devices',
+    )
+    expect(foundListenersLine({ ...SUMMARY, loudestListener: '   ', listeners: Number.NaN })).toBe('')
+  })
+
+  it('has the agreed wording', () => {
+    expect(FOUND_COPY.title).toBe('Found it!')
+    expect(COPY.hunting.found).toBe('Found it')
+    expect(`${FOUND_COPY.tipTitle} ${FOUND_COPY.tip}`).toBe(
+      'Smoke or CO alarm? A low-battery chirp stops once you put in a fresh battery. ' +
+        'Press its test button afterwards to check it still works.',
+    )
+    expect(FOUND_COPY.notesTitle).toBe('Where you were')
+    expect(FOUND_COPY.keepHint).toBe('Not it after all? Carry on where you left off.')
+    expect([FOUND_COPY.done, FOUND_COPY.newHunt, FOUND_COPY.keepHunting, FOUND_COPY.copyLog]).toEqual([
+      'Done',
+      'New hunt',
+      'Keep hunting',
+      LOG_COPY.copy,
+    ])
   })
 })

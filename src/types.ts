@@ -298,6 +298,35 @@ export interface StationModeView {
   readonly canScan: boolean
 }
 
+// ---- Found it ---------------------------------------------------------------------------------
+
+/** A log note shown on the Found it screen ("where you were"). */
+export interface FoundNote {
+  readonly wallMs: number
+  readonly note: string
+  readonly verdict: Verdict
+  readonly pct: number | null
+}
+
+/** Summary of a finished hunt, built by main.ts when the user taps Found it. Plain data. */
+export interface FoundSummary {
+  /** Epoch ms when Found it was tapped. */
+  readonly foundAtWallMs: number
+  /** Epoch ms of the hunt's first reading (null if there was none). */
+  readonly startedAtWallMs: number | null
+  readonly f0Hz: number | null
+  readonly mode: LockMode | null
+  /** Readings in this hunt (not the whole session log). */
+  readonly readings: number
+  readonly bestLevelDb: number | null
+  /** Notes the user typed in this hunt's log entries, oldest first (entries without a note are left out). */
+  readonly notes: readonly FoundNote[]
+  /** Listener that heard the last compared chirp loudest (stations / extra mics), if one was named. */
+  readonly loudestListener: string | null
+  /** Listeners that took part, including this device (1 without stations or extra mics). */
+  readonly listeners: number
+}
+
 /** Which panel the hunting screen shows under the verdict. */
 export type HuntPanel = 'meter' | 'direction' | 'log' | 'stations'
 
@@ -398,6 +427,8 @@ export type Screen =
   | { readonly kind: 'error'; readonly code: ErrorCode }
   /** This device is a listening station for another device's hunt. */
   | { readonly kind: 'station' }
+  /** The hunt ended with Found it: a summary; audio is paused, the hunt can be resumed. */
+  | { readonly kind: 'found' }
 
 export interface Toast {
   readonly text: string
@@ -430,6 +461,8 @@ export interface AppState {
   readonly stations: StationsView | null
   /** Station side: present while screen.kind is 'station'. */
   readonly stationMode: StationModeView | null
+  /** Present while screen.kind is 'found'. */
+  readonly found: FoundSummary | null
 }
 
 export type AppEvent =
@@ -470,3 +503,9 @@ export type AppEvent =
   | { readonly type: 'stationStart' }
   | { readonly type: 'stationView'; readonly view: StationModeView }
   | { readonly type: 'stationStop' }
+  /** hunting -> found (keeps lock, hunt, log and stations so Keep hunting can resume). */
+  | { readonly type: 'found'; readonly summary: FoundSummary }
+  /** found -> hunting. */
+  | { readonly type: 'keepHunting' }
+  /** found -> idle (the session is over; the log is cleared like after Stop). */
+  | { readonly type: 'foundDone' }

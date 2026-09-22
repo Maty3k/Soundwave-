@@ -2,10 +2,11 @@
  * App state machine: a pure reducer over AppState plus a tiny store. No DOM, no audio.
  *
  * Screens: idle -> requesting -> listening -> locked (banner) -> hunting, with paused and error
- * branches, plus idle -> station (this device listens for another device's hunt). Events that do
- * not apply to the current screen return the SAME state object, so the store (and anything
- * comparing references) can skip work. Times are ms on the caller's clock (performance.now() in
- * the app); events that carry nowMs also advance state.nowMs.
+ * branches, plus idle -> station (this device listens for another device's hunt) and hunting ->
+ * found (the Found it summary: Keep hunting goes back, Done ends the session, New hunt starts a
+ * fresh one). Events that do not apply to the current screen return the SAME state object, so
+ * the store (and anything comparing references) can skip work. Times are ms on the caller's
+ * clock (performance.now() in the app); events that carry nowMs also advance state.nowMs.
  */
 import type { Config } from './config.ts'
 import type {
@@ -24,6 +25,7 @@ import type {
 const IDLE: Screen = Object.freeze({ kind: 'idle' })
 const HUNTING: Screen = Object.freeze({ kind: 'hunting' })
 const STATION: Screen = Object.freeze({ kind: 'station' })
+const FOUND: Screen = Object.freeze({ kind: 'found' })
 /** Direction scan closed (the only scan state outside the hunting screen). */
 export const SCAN_CLOSED: ScanState = Object.freeze({ open: false, status: 'off', radar: null })
 const NO_LOG: readonly LogEntry[] = Object.freeze([])
@@ -78,13 +80,14 @@ export function initialState(caps: Capabilities, settings: Settings, debug: bool
     log: NO_LOG,
     stations: null,
     stationMode: null,
+    found: null,
   }
 }
 
 /**
  * Back to the landing screen, dropping the session (mic, lock, hunt, pending beep, log, station
- * view) but keeping settings, toast and the stations view (main owns the hub's lifetime and
- * dispatches `stations: null` when it tears the hub down).
+ * view, Found it summary) but keeping settings, toast and the stations view (main owns the hub's
+ * lifetime and dispatches `stations: null` when it tears the hub down).
  */
 function toIdle(state: AppState): AppState {
   return {
@@ -100,6 +103,7 @@ function toIdle(state: AppState): AppState {
     panel: METER,
     log: NO_LOG,
     stationMode: null,
+    found: null,
   }
 }
 
@@ -167,6 +171,10 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
   const screen = state.screen
   switch (event.type) {
     case 'start':
+      // New hunt on the Found it screen: a fresh session (main has torn the old one down).
+      if (screen.kind === 'found') {
+        return { ...toIdle(state), stations: null, nowMs: event.nowMs, screen: { kind: 'requesting', sinceMs: event.nowMs } }
+      }
       if (screen.kind !== 'idle') return state
       return { ...state, nowMs: event.nowMs, screen: { kind: 'requesting', sinceMs: event.nowMs } }
 
@@ -384,6 +392,20 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
 
     case 'stationStop':
       if (screen.kind !== 'station') return state
+      return toIdle(state)
+
+    case 'found':
+      // Lock, hunt, log, stations and the panel stay, so Keep hunting carries on where it left off.
+      if (screen.kind !== 'hunting') return state
+      return { ...state, screen: FOUND, found: event.summary, confirmStop: false, scan: SCAN_CLOSED }
+
+    case 'keepHunting':
+      if (screen.kind !== 'found') return state
+      return { ...state, screen: HUNTING, found: null }
+
+    case 'foundDone':
+      // The session is over, exactly like a confirmed Stop.
+      if (screen.kind !== 'found') return state
       return toIdle(state)
 
     default:

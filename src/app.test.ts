@@ -5,6 +5,7 @@ import type {
   AppEvent,
   AppState,
   Capabilities,
+  FoundSummary,
   HuntView,
   Lock,
   LogEntry,
@@ -116,6 +117,18 @@ const STATIONS: StationsView = {
 
 const STATION_VIEW: StationModeView = { ...STATION_INITIAL, step: 'connected', name: 'Kitchen', f0Hz: 3120, chirpsSent: 2 }
 
+const SUMMARY: FoundSummary = {
+  foundAtWallMs: 1_700_000_400_000,
+  startedAtWallMs: 1_700_000_000_000,
+  f0Hz: 3120,
+  mode: 'chirp',
+  readings: 2,
+  bestLevelDb: -59,
+  notes: [{ wallMs: 1_700_000_000_000, note: 'hall', verdict: 'first', pct: null }],
+  loudestListener: null,
+  listeners: 1,
+}
+
 /** A state on the given screen with session data consistent with it. */
 function on(screen: Screen, patch: Partial<AppState> = {}): AppState {
   const phase = screen.kind === 'paused' ? screen.from : screen.kind
@@ -126,7 +139,9 @@ function on(screen: Screen, patch: Partial<AppState> = {}): AppState {
         ? { stationMode: STATION_VIEW }
         : phase === 'listening'
           ? { mic: MIC, micLevel: 0.4 }
-          : { mic: MIC, micLevel: 0.4, lock: LOCK, hunt: HUNT1 }
+          : phase === 'found'
+            ? { mic: MIC, micLevel: 0.4, lock: LOCK, hunt: HUNT1, found: SUMMARY }
+            : { mic: MIC, micLevel: 0.4, lock: LOCK, hunt: HUNT1 }
   return { ...BASE, ...session, ...patch, screen }
 }
 
@@ -143,6 +158,7 @@ const S = {
   error: { kind: 'error', code: 'permission' },
   lockedHeld: { kind: 'locked', sinceMs: T0, held: true },
   station: { kind: 'station' },
+  found: { kind: 'found' },
 } as const satisfies Record<string, Screen>
 
 const T1 = NOW + 7_000
@@ -159,6 +175,7 @@ const CLEARED: Partial<AppState> = {
   panel: 'meter',
   log: [],
   stationMode: null,
+  found: null,
 }
 
 // ---- Transition table ----------------------------------------------------------------------------
@@ -326,6 +343,24 @@ const TABLE: readonly Row[] = [
     expect: { stationMode: { ...STATION_VIEW, chirpsSent: 3 } } },
   { name: 'station --stationStop--> idle without a station view', from: on(S.station), event: { type: 'stationStop' },
     expect: { ...CLEARED, screen: { kind: 'idle' } } },
+
+  // Found it: a summary screen; Keep hunting resumes, Done ends the session, New hunt starts over.
+  { name: 'hunting --found--> found with the summary, keeping lock, hunt, log, stations and panel',
+    from: on(S.hunting, { hunt: HUNT_AT, log: LOG2, stations: STATIONS, panel: 'log' }), event: { type: 'found', summary: SUMMARY },
+    expect: { screen: { kind: 'found' }, found: SUMMARY } },
+  { name: 'hunting (confirm open, scan open) --found--> found, confirm and scan closed',
+    from: on(S.hunting, { hunt: HUNT_AT, confirmStop: true, panel: 'direction', scan: { open: true, status: 'active', radar: null } }),
+    event: { type: 'found', summary: SUMMARY },
+    expect: { screen: { kind: 'found' }, found: SUMMARY, confirmStop: false, scan: SCAN_CLOSED } },
+  { name: 'found --keepHunting--> hunting without the summary',
+    from: on(S.found, { hunt: HUNT_AT, log: LOG2, stations: STATIONS, panel: 'stations' }), event: { type: 'keepHunting' },
+    expect: { screen: { kind: 'hunting' }, found: null } },
+  { name: 'found --foundDone--> idle, session and log cleared like a confirmed stop',
+    from: on(S.found, { hunt: HUNT_AT, log: LOG2, panel: 'log' }), event: { type: 'foundDone' },
+    expect: { ...CLEARED, screen: { kind: 'idle' } } },
+  { name: 'found --start (New hunt)--> requesting, session, log, summary and stations cleared',
+    from: on(S.found, { hunt: HUNT_AT, log: LOG2, stations: STATIONS, panel: 'log' }), event: { type: 'start', nowMs: T1 },
+    expect: { ...CLEARED, stations: null, nowMs: T1, screen: { kind: 'requesting', sinceMs: T1 } } },
 ]
 
 describe('reduce: transition table', () => {
@@ -402,6 +437,9 @@ const SCREEN_EVENTS: readonly AppEvent[] = [
   { type: 'stationStart' },
   { type: 'stationView', view: STATION_INITIAL },
   { type: 'stationStop' },
+  { type: 'found', summary: SUMMARY },
+  { type: 'keepHunting' },
+  { type: 'foundDone' },
 ]
 
 /** Event labels ('visible' split by health) that change each fixture; all others must be no-ops. */
@@ -411,13 +449,15 @@ const APPLIES: ReadonlyArray<readonly [string, AppState, readonly string[]]> = [
   ['listening', on(S.listening), ['lock', 'stopRequest', 'hidden', 'micLost', 'pending']],
   ['locked', on(S.locked), ['confirmLock', 'notIt', 'hunt', 'stopRequest', 'hidden', 'micLost', 'holdLock', 'logUpsert']],
   ['locked, held', on(S.lockedHeld), ['confirmLock', 'notIt', 'hunt', 'stopRequest', 'hidden', 'micLost', 'logUpsert']],
-  ['hunting', on(S.hunting), ['hunt', 'relisten', 'stopRequest', 'hidden', 'micLost', 'panel', 'logUpsert']],
+  ['hunting', on(S.hunting), ['hunt', 'relisten', 'stopRequest', 'hidden', 'micLost', 'panel', 'logUpsert', 'found']],
   ['hunting, confirm open', on(S.hunting, { hunt: HUNT_AT, confirmStop: true }),
-    ['hunt', 'relisten', 'stopConfirm', 'stopCancel', 'hidden', 'micLost', 'panel', 'logUpsert']],
+    ['hunt', 'relisten', 'stopConfirm', 'stopCancel', 'hidden', 'micLost', 'panel', 'logUpsert', 'found']],
   ['paused', on(S.pausedHunting), ['micError', 'visible:healthy', 'visible:unhealthy', 'micLost', 'resumed', 'stopRequest']],
   ['paused, needs gesture', on(S.pausedGesture), ['micError', 'visible:healthy', 'resumed', 'stopRequest']],
   ['error', on(S.error), ['retry', 'back']],
   ['station', on(S.station), ['stationView', 'stationStop']],
+  // Audio is paused on the Found it screen: hiding the page or losing the mic changes nothing there.
+  ['found', on(S.found, { log: LOG2, stations: STATIONS }), ['start', 'keepHunting', 'foundDone']],
 ]
 
 function label(e: AppEvent): string {
@@ -651,7 +691,7 @@ describe('reduce: hunting panel', () => {
   it('changes only on the hunting screen, and choosing the current panel is a no-op', () => {
     const s = on(S.hunting, { panel: 'log' })
     expect(reduce(s, { type: 'panel', panel: 'log' }, CONFIG)).toBe(s)
-    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting, S.station]) {
+    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting, S.station, S.found]) {
       const other = on(screen)
       expect(reduce(other, { type: 'panel', panel: 'stations' }, CONFIG)).toBe(other)
     }
@@ -681,7 +721,7 @@ describe('reduce: log', () => {
   })
 
   it('takes entries only while locked or hunting', () => {
-    for (const screen of [S.idle, S.listening, S.pausedHunting, S.error, S.station]) {
+    for (const screen of [S.idle, S.listening, S.pausedHunting, S.error, S.station, S.found]) {
       const s = on(screen)
       expect(reduce(s, { type: 'logUpsert', entry: logEntry(1) }, CONFIG)).toBe(s)
     }
@@ -842,7 +882,7 @@ describe('reduce: direction scan', () => {
     const opened = reduce(on(S.hunting), { type: 'scanOpen' }, CONFIG)
     expect(opened.scan).toEqual({ open: true, status: 'starting', radar: null })
     expect(reduce(opened, { type: 'scanOpen' }, CONFIG)).toBe(opened)
-    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting]) {
+    for (const screen of [S.idle, S.listening, S.locked, S.pausedHunting, S.found]) {
       const s = on(screen)
       expect(reduce(s, { type: 'scanOpen' }, CONFIG)).toBe(s)
     }
@@ -882,6 +922,135 @@ describe('reduce: direction scan', () => {
     const asked = reduce(confirm, { type: 'stopRequest' }, CONFIG)
     expect(asked.scan).toBe(OPEN)
     expect(reduce(asked, { type: 'stopConfirm' }, CONFIG).scan).toBe(SCAN_CLOSED)
+  })
+})
+
+describe('reduce: Found it', () => {
+  const HUNTING_STATE = on(S.hunting, { hunt: HUNT_AT, log: LOG2, stations: STATIONS, panel: 'stations' })
+
+  it('keeps lock, hunt, log, stations and panel by reference, so Keep hunting can resume', () => {
+    const found = reduce(HUNTING_STATE, { type: 'found', summary: SUMMARY }, CONFIG)
+    expect(found.screen).toEqual({ kind: 'found' })
+    expect(found.found).toBe(SUMMARY)
+    expect(found.lock).toBe(HUNTING_STATE.lock)
+    expect(found.hunt).toBe(HUNTING_STATE.hunt)
+    expect(found.log).toBe(LOG2)
+    expect(found.stations).toBe(STATIONS)
+    expect(found.panel).toBe('stations')
+    expect(found.mic).toBe(MIC)
+  })
+
+  it('Keep hunting comes back to the same hunt', () => {
+    const found = reduce(HUNTING_STATE, { type: 'found', summary: SUMMARY }, CONFIG)
+    const back = reduce(found, { type: 'keepHunting' }, CONFIG)
+    expect(back).toEqual(HUNTING_STATE)
+    expect(back.hunt).toBe(HUNTING_STATE.hunt)
+    expect(back.log).toBe(LOG2)
+    // The hunt goes on: new views and log lines are taken again, and Found it works a second time.
+    expect(reduce(back, { type: 'hunt', view: V2 }, CONFIG).hunt).toBe(V2)
+    expect(reduce(back, { type: 'logUpsert', entry: logEntry(2) }, CONFIG).log).toHaveLength(3)
+    const again = reduce(back, { type: 'found', summary: { ...SUMMARY, readings: 3 } }, CONFIG)
+    expect(again.found?.readings).toBe(3)
+  })
+
+  it('Done ends the session exactly like a confirmed Stop', () => {
+    const viaFound = reduce(reduce(HUNTING_STATE, { type: 'found', summary: SUMMARY }, CONFIG), { type: 'foundDone' }, CONFIG)
+    const viaStop = reduce(reduce(HUNTING_STATE, { type: 'stopRequest' }, CONFIG), { type: 'stopConfirm' }, CONFIG)
+    expect(viaFound).toEqual(viaStop)
+    expect(viaFound.screen).toEqual({ kind: 'idle' })
+    expect(viaFound.log).toEqual([])
+    expect(viaFound.found).toBeNull()
+  })
+
+  it('New hunt starts a fresh session: requesting, then listening with an empty log', () => {
+    let s = reduce(HUNTING_STATE, { type: 'found', summary: SUMMARY }, CONFIG)
+    s = reduce(s, { type: 'start', nowMs: T1 }, CONFIG)
+    expect(s.screen).toEqual({ kind: 'requesting', sinceMs: T1 })
+    expect(s.lock).toBeNull()
+    expect(s.hunt).toBeNull()
+    expect(s.log).toEqual([])
+    expect(s.found).toBeNull()
+    expect(s.stations).toBeNull()
+    expect(s.panel).toBe('meter')
+    expect(s.settings).toBe(HUNTING_STATE.settings)
+    s = reduce(s, { type: 'micReady', mic: MIC, nowMs: T1 + 300 }, CONFIG)
+    expect(s.screen).toEqual({ kind: 'listening', sinceMs: T1 + 300 })
+  })
+
+  it('is taken only on the hunting screen', () => {
+    for (const screen of [S.idle, S.requesting, S.listening, S.locked, S.lockedHeld, S.pausedHunting, S.pausedGesture, S.error, S.station, S.found]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'found', summary: SUMMARY }, CONFIG), screen.kind).toBe(s)
+    }
+  })
+
+  it('Keep hunting and Done apply only on the Found it screen', () => {
+    for (const screen of [S.idle, S.listening, S.locked, S.hunting, S.pausedHunting, S.error, S.station]) {
+      const s = on(screen)
+      expect(reduce(s, { type: 'keepHunting' }, CONFIG), screen.kind).toBe(s)
+      expect(reduce(s, { type: 'foundDone' }, CONFIG), screen.kind).toBe(s)
+    }
+  })
+
+  it('is not paused by hiding the page or losing the mic (audio is already paused there)', () => {
+    const s = on(S.found)
+    const events: readonly AppEvent[] = [
+      { type: 'hidden' },
+      { type: 'visible', healthy: true },
+      { type: 'visible', healthy: false },
+      { type: 'micLost' },
+      { type: 'resumed' },
+    ]
+    for (const event of events) expect(reduce(s, event, CONFIG), label(event)).toBe(s)
+  })
+
+  it('a tick only moves the clock, the mic level and the toast', () => {
+    const s = on(S.found, { toast: { text: 'Log copied.', untilMs: T1 } })
+    const later = reduce(s, { type: 'tick', nowMs: T1 + 10 * CONFIG.lockedBannerMs, micLevel: 0 }, CONFIG)
+    expect(later).toEqual({ ...s, nowMs: T1 + 10 * CONFIG.lockedBannerMs, micLevel: 0, toast: null })
+    expect(later.screen).toBe(s.screen)
+    expect(reduce(s, { type: 'tick', nowMs: s.nowMs }, CONFIG)).toBe(s)
+  })
+
+  it('keeps note edits that arrive after Found it (a debounced note field)', () => {
+    const s = on(S.found, { log: LOG2 })
+    expect(reduce(s, { type: 'logNote', id: 1, note: 'kitchen' }, CONFIG).log[1]!.note).toBe('kitchen')
+  })
+
+  it('takes stations updates there: the hub and the extra mics keep running for Keep hunting', () => {
+    const s = on(S.found, { stations: STATIONS })
+    const view: StationsView = { ...STATIONS, calibrating: true }
+    expect(reduce(s, { type: 'stations', view }, CONFIG).stations).toBe(view)
+  })
+
+  it('neither opens the direction scan nor switches panels there', () => {
+    const s = on(S.found, { panel: 'direction' })
+    expect(reduce(s, { type: 'scanOpen' }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'panel', panel: 'meter' }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'stopRequest' }, CONFIG)).toBe(s)
+  })
+
+  it('walks a whole session: hunt, Found it, Keep hunting, Found it, Done', () => {
+    let s = initialState(CAPS, SETTINGS, false, 0)
+    const step = (e: AppEvent): AppState => (s = reduce(s, e, CONFIG))
+    step({ type: 'start', nowMs: 10 })
+    step({ type: 'micReady', mic: MIC, nowMs: 500 })
+    step({ type: 'lock', lock: LOCK, nowMs: 30_000 })
+    step({ type: 'confirmLock' })
+    step({ type: 'hunt', view: HUNT_AT })
+    step({ type: 'logUpsert', entry: logEntry(0) })
+    step({ type: 'found', summary: SUMMARY })
+    expect(s.screen.kind).toBe('found')
+    step({ type: 'hunt', view: V2 }) // main pushes no views there; one arriving anyway is ignored
+    expect(s.hunt).toBe(HUNT_AT)
+    step({ type: 'keepHunting' })
+    expect(s.screen.kind).toBe('hunting')
+    step({ type: 'logUpsert', entry: logEntry(1) })
+    step({ type: 'found', summary: { ...SUMMARY, readings: 4 } })
+    expect(s.found?.readings).toBe(4)
+    expect(s.log).toHaveLength(2)
+    step({ type: 'foundDone' })
+    expect(s).toEqual(initialState(CAPS, SETTINGS, false, 30_000))
   })
 })
 

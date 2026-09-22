@@ -11,9 +11,13 @@
  * Hunting screen, top to bottom: one-row top bar (frequency, mode, Clicks, Vibrate), the verdict
  * hero, the status bar ("what to do now": move, or hold still), a tab row (Meter, Direction when
  * there is a compass, Log, Stations) with the selected panel under it, and a sticky bottom bar
- * (Listen again, Stop). Tabs follow state.panel; choosing one calls handlers.onPanel, and main
- * opens or closes the compass in reaction. The Log and Stations panels come from src/ui/ and are
- * created the first time their tab opens and rendered only while it is open.
+ * (Listen again, Found it, Stop). Tabs follow state.panel; choosing one calls handlers.onPanel, and
+ * main opens or closes the compass in reaction. The Log and Stations panels come from src/ui/ and
+ * are created the first time their tab opens and rendered only while it is open.
+ *
+ * Found it screen: a check mark, the title, a summary of the hunt (state.found), a battery tip,
+ * the notes typed in the log ("Where you were") and the way on: Done, New hunt, Copy log, and
+ * Keep hunting for when it was not it after all.
  */
 import type { Config } from './config.ts'
 import {
@@ -24,8 +28,12 @@ import {
   ERROR_COPY,
   errorBody,
   formatClock,
+  formatClockTime,
   formatHz,
   formatPct,
+  FOUND_COPY,
+  foundListenersParts,
+  foundSummaryParts,
   GUIDANCE,
   guidanceText,
   heardText,
@@ -33,6 +41,7 @@ import {
   historyItemLabel,
   historyItemText,
   liveAnnouncement,
+  LOG_COPY,
   liveDeltaLine,
   meterValueText,
   pendingSightingsText,
@@ -41,11 +50,13 @@ import {
   rawAudioText,
   readingAnnouncement,
   tabName,
+  verdictLabel,
 } from './copy.ts'
 import type { ErrorAction, Platform } from './copy.ts'
 import type {
   AppState,
   ErrorCode,
+  FoundSummary,
   HuntPanel,
   HuntView,
   LockMode,
@@ -79,6 +90,14 @@ export interface UiHandlers {
    */
   onRelistenConfirm(): void
   onResetBest(): void
+  /** Hunting: the beep is found. main builds the summary, pauses the audio and shows the Found it screen. */
+  onFound(): void
+  /** Found it: not it after all; resume the same hunt. */
+  onKeepHunting(): void
+  /** Found it: finish (the session ends like a confirmed Stop). */
+  onFoundDone(): void
+  /** Found it: end this session and start listening for another beep. Runs inside the click. */
+  onNewHunt(): void
   onResume(): void
   onRetry(): void
   onBack(): void
@@ -94,7 +113,7 @@ export interface UiHandlers {
   onPanel(panel: HuntPanel): void
   onScanClear(): void
 
-  // Log panel (src/ui/logPanel.ts).
+  // Log panel (src/ui/logPanel.ts); Copy log is also on the Found it screen.
   onLogNote(id: number, note: string): void
   onCopyLog(): void
 
@@ -249,6 +268,46 @@ function lockIcon(): SVGSVGElement {
     { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
     s('rect', { x: '5', y: '10.5', width: '14', height: '10', rx: '2.5', fill: 'currentColor' }),
     s('path', { d: 'M8 10.5V8a4 4 0 0 1 8 0v2.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }),
+  )
+}
+
+/** The sonar mark's outer arcs around a filled check: the Found it screen's hero. */
+function foundMark(): SVGSVGElement {
+  return s(
+    'svg',
+    { class: 'found-mark', viewBox: '0 0 64 64', 'aria-hidden': 'true', focusable: 'false' },
+    s(
+      'g',
+      { class: 'found-mark__arcs', fill: 'none', stroke: 'currentColor', 'stroke-width': '4', 'stroke-linecap': 'round' },
+      s('path', { d: 'M16.4 47.6a22 22 0 0 1 0-31.2', opacity: '.55' }),
+      s('path', { d: 'M11.5 52.5a29 29 0 0 1 0-41', opacity: '.3' }),
+      s('path', { d: 'M47.6 16.4a22 22 0 0 1 0 31.2', opacity: '.55' }),
+      s('path', { d: 'M52.5 11.5a29 29 0 0 1 0 41', opacity: '.3' }),
+    ),
+    s(
+      'g',
+      { class: 'found-mark__check' },
+      s('circle', { class: 'found-mark__dot', cx: '32', cy: '32', r: '14' }),
+      s('path', {
+        class: 'found-mark__tick',
+        d: 'M25.5 32.5l4.5 4.5 8.5-9',
+        fill: 'none',
+        'stroke-width': '4',
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+      }),
+    ),
+  )
+}
+
+/** Battery glyph for the Found it screen's tip. */
+function batteryIcon(): SVGSVGElement {
+  return s(
+    'svg',
+    { class: 'icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    s('rect', { x: '2.5', y: '7', width: '16', height: '10', rx: '2.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }),
+    s('path', { d: 'M21 10.5v3', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round' }),
+    s('rect', { x: '5.5', y: '10', width: '6', height: '4', rx: '1', fill: 'currentColor' }),
   )
 }
 
@@ -759,13 +818,23 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
   let logPanel: ReturnType<typeof createLogPanel> | null = null
   let stationsPanel: ReturnType<typeof createStationsPanel> | null = null
 
-  // Bottom bar in the thumb zone.
+  // Bottom bar in the thumb zone: Found it is the positive way out, Stop the destructive one.
   const relisten = button(H.relisten, () => {
     const readings = current.hunt?.readings.length ?? 0
     if (readings >= cfg.stopConfirmMinReadings) hooks.requestRelisten()
     else handlers.onRelistenConfirm()
   }, 'secondary')
-  const bottombar = h('div', { class: 'bottombar' }, relisten, button(H.stop, () => handlers.onStopRequest(), 'danger'))
+  relisten.classList.add('bar-relisten')
+  const found = button(H.found, () => {
+    // A note being typed in the Log panel is sent on blur: send it now, so the summary has it.
+    const active = document.activeElement
+    if (active instanceof HTMLInputElement && el.contains(active)) active.blur()
+    handlers.onFound()
+  }, 'primary')
+  found.classList.add('bar-found')
+  const stop = button(H.stop, () => handlers.onStopRequest(), 'danger')
+  stop.classList.add('bar-stop')
+  const bottombar = h('div', { class: 'bottombar' }, relisten, found, stop)
 
   const el = section(
     'hunting',
@@ -1015,6 +1084,92 @@ function pausedView(from: PausedFrom, needsGesture: boolean, handlers: UiHandler
   return { el, focus: resume ?? title, update() {} }
 }
 
+/**
+ * The hunt is over: what was found, a battery tip, where the user stood (the notes typed in the
+ * log) and the way on. The summary is drawn once per FoundSummary object; Copy log shows only
+ * while the log has lines.
+ */
+function foundView(handlers: UiHandlers): ScreenView {
+  const F = FOUND_COPY
+  const title = heading(F.title, 'screen-title found-title')
+  const summaryLine = h('p', { class: 'found-summary num' })
+  const listenersLine = h('p', { class: 'found-listeners' })
+  const hero = h('header', { class: 'found-hero' }, foundMark(), title, summaryLine, listenersLine)
+
+  const tip = h('p', { class: 'found-tip' }, batteryIcon(), h('span', {}, h('strong', {}, F.tipTitle), ` ${F.tip}`))
+
+  const notesList = h('ol', { class: 'found-notes__list' })
+  const notes = h(
+    'section',
+    { class: 'found-notes', 'aria-labelledby': 'found-notes-title', hidden: true },
+    h('h2', { class: 'found-notes__title', id: 'found-notes-title' }, F.notesTitle),
+    notesList,
+  )
+
+  const copyLog = button(F.copyLog, () => handlers.onCopyLog(), 'secondary')
+  const keep = button(F.keepHunting, () => handlers.onKeepHunting(), 'secondary')
+  keep.setAttribute('aria-describedby', 'found-keep-hint')
+  const actions = h(
+    'div',
+    { class: 'found-actions' },
+    button(F.done, () => handlers.onFoundDone(), 'primary'),
+    h('div', { class: 'found-more' }, button(F.newHunt, () => handlers.onNewHunt(), 'secondary'), copyLog),
+    h('div', { class: 'found-keep' }, h('p', { class: 'found-keep__hint', id: 'found-keep-hint' }, F.keepHint), keep),
+  )
+
+  const el = section('found', hero, tip, notes, actions)
+
+  /**
+   * Parts as whole, unbreakable items: a line breaks only between them. The separator dot belongs
+   * to the item before it, so a wrapped line never starts with a dot.
+   */
+  function drawParts(target: HTMLElement, parts: readonly string[]): void {
+    const dot = LOG_COPY.sep.trim()
+    const nodes: (Node | string)[] = []
+    parts.forEach((part, i) => {
+      if (i > 0) nodes.push(' ')
+      nodes.push(h('span', { class: 'found-part' }, i < parts.length - 1 ? `${part}\u00a0${dot}` : part))
+    })
+    target.replaceChildren(...nodes)
+    setHidden(target, parts.length === 0)
+  }
+
+  function drawNotes(summary: FoundSummary): void {
+    const items = summary.notes.map((n) => {
+      const time = formatClockTime(n.wallMs)
+      const date = new Date(n.wallMs)
+      return h(
+        'li',
+        { class: 'found-note' },
+        h('time', { class: 'found-note__time', datetime: Number.isNaN(date.getTime()) ? null : date.toISOString() }, time),
+        ' ',
+        h('span', { class: 'found-note__verdict', 'data-verdict': n.verdict }, verdictLabel(n.verdict)),
+        ' ',
+        h('span', { class: 'found-note__text' }, n.note),
+      )
+    })
+    notesList.replaceChildren(...items)
+    setHidden(notes, items.length === 0)
+  }
+
+  let shown: FoundSummary | null = null
+  return {
+    el,
+    focus: title,
+    update(state) {
+      if (state.screen.kind !== 'found') return
+      const summary = state.found
+      if (summary !== null && summary !== shown) {
+        shown = summary
+        drawParts(summaryLine, foundSummaryParts(summary))
+        drawParts(listenersLine, foundListenersParts(summary))
+        drawNotes(summary)
+      }
+      setHidden(copyLog, state.log.length === 0)
+    },
+  }
+}
+
 function errorView(code: ErrorCode, handlers: UiHandlers): ScreenView {
   const card = errorCard(code, handlers, 'h1')
   return { el: section('error centered', card.el), focus: card.title, update() {} }
@@ -1061,6 +1216,8 @@ function buildView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: Hu
       return errorView(screen.code, handlers)
     case 'station':
       return stationView(handlers, cfg)
+    case 'found':
+      return foundView(handlers)
   }
 }
 
