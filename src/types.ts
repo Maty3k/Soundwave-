@@ -254,7 +254,7 @@ export interface PairingView {
   /** Compact offer code shown as QR and text while step is showOffer / scanAnswer / pasteAnswer. */
   readonly offerCode: string | null
   readonly message: string | null
-  /** A camera QR scanner (BarcodeDetector) is available on this device. */
+  /** This device can scan QR codes with its camera (BarcodeDetector, or the bundled decoder). */
   readonly canScan: boolean
 }
 

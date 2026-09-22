@@ -1,8 +1,9 @@
 /**
  * QR codes for the pairing codes: drawing them (qrcode-generator, MIT) and reading them with the
- * camera where the browser has a BarcodeDetector with QR support (Chrome and Edge on Android,
- * macOS and ChromeOS; not on Windows or Linux, and in Safari and Firefox only behind flags).
- * Elsewhere the code is typed or pasted instead.
+ * camera. Reading uses the browser's BarcodeDetector where it has one with QR support (Chrome and
+ * Edge on Android, macOS and ChromeOS). Everywhere else (Safari, Firefox, Chrome on Windows and
+ * Linux) qrFallback.ts is loaded on demand and decodes the frames itself, in a worker. Without a
+ * camera the code is copied or pasted instead.
  *
  * qrMatrix and qrPath are pure; qrSvg, qrScanSupported and QrScanner need a browser and
  * feature-detect everything they use.
@@ -95,12 +96,14 @@ export function qrSvg(text: string, sizePx = 240): SVGSVGElement {
 
 // ---- Scanning ----------------------------------------------------------------------------------
 
-/** The parts of the (not yet typed) Barcode Detection API used here. */
-interface DetectedCode {
+/** The parts of the (not yet typed) Barcode Detection API used here; qrFallback.ts implements them too. */
+export interface DetectedCode {
   readonly rawValue?: unknown
 }
-interface CodeDetector {
+export interface CodeDetector {
   detect(source: HTMLVideoElement): Promise<readonly DetectedCode[]>
+  /** Release what the detector holds (the fallback's worker). The native one has nothing to close. */
+  close?(): void
 }
 interface CodeDetectorClass {
   new (options?: { formats: string[] }): CodeDetector
@@ -117,14 +120,38 @@ function cameraApi(): MediaDevices | null {
   return typeof md?.getUserMedia === 'function' ? md : null
 }
 
+/** The fallback decoder draws video frames onto a canvas, so it needs a DOM. */
+function fallbackPossible(): boolean {
+  return typeof document !== 'undefined' && typeof document.createElement === 'function'
+}
+
+/** Loads qrFallback.ts (and with it the decoder) the first time a browser without BarcodeDetector scans. */
+function loadFallbackDetector(): Promise<CodeDetector> {
+  return import('./qrFallback.ts').then((m) => m.createFallbackDetector())
+}
+
+/** A BarcodeDetector for QR codes, or null where there is none (or it refuses QR). */
+function nativeDetector(): CodeDetector | null {
+  const BD = detectorClass()
+  if (BD === null) return null
+  try {
+    return new BD({ formats: ['qr_code'] })
+  } catch {
+    return null
+  }
+}
+
 /**
- * True when the browser can read QR codes from the camera: a BarcodeDetector whose
- * getSupportedFormats() includes 'qr_code', and getUserMedia. False on any error.
+ * True when the browser can read QR codes from the camera: getUserMedia, plus a BarcodeDetector
+ * whose getSupportedFormats() includes 'qr_code' or else a DOM for the fallback decoder. False on
+ * any error.
  */
 export async function qrScanSupported(): Promise<boolean> {
   try {
+    if (cameraApi() === null) return false
+    if (fallbackPossible()) return true
     const BD = detectorClass()
-    if (BD === null || typeof BD.getSupportedFormats !== 'function' || cameraApi() === null) return false
+    if (BD === null || typeof BD.getSupportedFormats !== 'function') return false
     const formats = await BD.getSupportedFormats()
     return Array.isArray(formats) && formats.includes('qr_code')
   } catch {
@@ -158,6 +185,7 @@ export class QrScanner {
   /** Called with each distinct decoded text (once per value until the next start()). */
   onResult: ((text: string) => void) | null = null
   private readonly video: HTMLVideoElement
+  private readonly loadFallback: () => Promise<CodeDetector>
   private stream: MediaStream | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private detector: CodeDetector | null = null
@@ -166,8 +194,10 @@ export class QrScanner {
   /** Incremented by start() and stop(): a start() that was overtaken gives up quietly. */
   private generation = 0
 
-  constructor(video: HTMLVideoElement) {
+  /** options.loadFallback replaces the on-demand fallback decoder (tests). */
+  constructor(video: HTMLVideoElement, options: { readonly loadFallback?: () => Promise<CodeDetector> } = {}) {
     this.video = video
+    this.loadFallback = options.loadFallback ?? loadFallbackDetector
   }
 
   /**
@@ -175,33 +205,45 @@ export class QrScanner {
    * and muted, and look for a QR code every 250 ms. Resolves once the camera is attached (without
    * waiting for playback, which some browsers hold back until the video is visible). Rejects with a
    * user-presentable Error when scanning is unsupported or the camera cannot be opened; resolves
-   * quietly when stop() or another start() overtakes it.
+   * quietly when stop() or another start() overtakes it. Without a BarcodeDetector the fallback
+   * decoder loads while the camera opens.
    */
   async start(): Promise<void> {
     this.stop()
     const gen = ++this.generation
     this.seen = new Set()
-    const BD = detectorClass()
     const camera = cameraApi()
-    if (BD === null || camera === null) throw new Error(ERR_NO_SCAN)
-    let detector: CodeDetector
-    try {
-      detector = new BD({ formats: ['qr_code'] })
-    } catch {
-      throw new Error(ERR_NO_SCAN)
+    const native = camera === null ? null : nativeDetector()
+    if (camera === null || (native === null && !fallbackPossible())) throw new Error(ERR_NO_SCAN)
+    const loading: Promise<CodeDetector | null> =
+      native !== null
+        ? Promise.resolve(native)
+        : this.loadFallback().then(
+            (d) => d,
+            () => null,
+          )
+    const discard = (): void => {
+      void loading.then((d) => d?.close?.())
     }
 
     let stream: MediaStream
     try {
       stream = await camera.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
     } catch (err) {
+      discard()
       // Stopped while the permission prompt was open: nobody is waiting for this error.
       if (gen !== this.generation) return
       throw new Error(cameraError(err))
     }
+    const detector = await loading
     if (gen !== this.generation) {
       stopTracks(stream)
+      detector?.close?.()
       return
+    }
+    if (detector === null) {
+      stopTracks(stream)
+      throw new Error(ERR_NO_SCAN)
     }
     this.stream = stream
     this.detector = detector
@@ -231,6 +273,7 @@ export class QrScanner {
     this.generation++
     if (this.timer !== null) clearInterval(this.timer)
     this.timer = null
+    this.detector?.close?.()
     this.detector = null
     this.busy = false
     if (this.stream !== null) stopTracks(this.stream)

@@ -108,7 +108,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
 - The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
-- Scanning pairing QR codes needs a browser with a built-in QR detector (Chrome on Android). Elsewhere, use Copy code or Share and paste the code on the other device.
+- Scanning a pairing QR code needs a camera. Chrome on Android, macOS and ChromeOS use their built-in QR detector; other browsers load a small bundled decoder (qr by Paul Miller) the first time they scan. Without a camera, use Copy code or Share and paste the code on the other device.
 - Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
 
 ### Tuning

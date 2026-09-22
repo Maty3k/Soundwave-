@@ -17,5 +17,7 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
+    // The minifier drops the bundled libraries' license headers: list them in dist/licenses.md.
+    license: { fileName: 'licenses.md' },
   },
 })

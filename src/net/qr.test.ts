@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { QrScanner, qrMatrix, qrPath, qrScanSupported, qrSvg } from './qr.ts'
+import { QrScanner, qrMatrix, qrPath, qrScanSupported, qrSvg, type CodeDetector } from './qr.ts'
 import { CODE_MAX_CHARS, encodeCode } from './sdpCode.ts'
 
 /** QR version from the module count (21 + 4 * (version - 1)). */
@@ -544,5 +544,146 @@ describe('QrScanner (fakes)', () => {
     expect(results).toEqual(['SW1.one'])
     expect(log.detectCalls).toBe(1)
     expect(tracks.every((t) => t.stopped)).toBe(true)
+  })
+})
+
+// ---- Without BarcodeDetector: the fallback decoder (qrFallback.ts, replaced by a fake here) -----
+
+describe('QrScanner without BarcodeDetector (fallback decoder)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** Just enough DOM for the fallback (it draws frames onto a canvas). */
+  function installDom(): void {
+    vi.stubGlobal('document', { createElement: () => ({}) })
+  }
+
+  function fakeFallback(batches: Detection[]): {
+    readonly detector: CodeDetector & { closed: number }
+    readonly load: () => Promise<CodeDetector>
+    readonly loads: () => number
+  } {
+    let loads = 0
+    const detector = {
+      closed: 0,
+      detect(): Promise<Detection> {
+        return Promise.resolve(batches.length > 0 ? batches.shift()! : [])
+      },
+      close(): void {
+        this.closed++
+      },
+    }
+    return {
+      detector,
+      load: () => {
+        loads++
+        return Promise.resolve(detector)
+      },
+      loads: () => loads,
+    }
+  }
+
+  function scanner(load: () => Promise<CodeDetector>): { readonly scanner: QrScanner; readonly results: string[] } {
+    const sc = new QrScanner(new FakeVideo() as unknown as HTMLVideoElement, { loadFallback: load })
+    const results: string[] = []
+    sc.onResult = (text) => results.push(text)
+    return { scanner: sc, results }
+  }
+
+  it('reports scanning as possible with a DOM and a camera', async () => {
+    installDom()
+    installCamera(() => Promise.resolve(fakeStream().stream))
+    await expect(qrScanSupported()).resolves.toBe(true)
+    vi.stubGlobal('navigator', {})
+    await expect(qrScanSupported()).resolves.toBe(false)
+  })
+
+  it('loads the decoder once, reports codes and closes it with the camera on stop()', async () => {
+    installDom()
+    const { stream, tracks } = fakeStream()
+    installCamera(() => Promise.resolve(stream))
+    const fb = fakeFallback([[], [{ rawValue: 'SW1.fallback' }], [{ rawValue: 'SW1.fallback' }]])
+    const { scanner: sc, results } = scanner(fb.load)
+    await sc.start()
+    expect(fb.loads()).toBe(1)
+    await vi.advanceTimersByTimeAsync(750)
+    expect(results).toEqual(['SW1.fallback'])
+    sc.stop()
+    expect(fb.detector.closed).toBe(1)
+    expect(tracks.every((t) => t.stopped)).toBe(true)
+  })
+
+  it('prefers the built-in BarcodeDetector', async () => {
+    installDom()
+    installDetector([[{ rawValue: 'SW1.native' }]])
+    installCamera(() => Promise.resolve(fakeStream().stream))
+    const fb = fakeFallback([])
+    const { scanner: sc, results } = scanner(fb.load)
+    await sc.start()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(results).toEqual(['SW1.native'])
+    expect(fb.loads()).toBe(0)
+    sc.stop()
+  })
+
+  it('uses the fallback when the BarcodeDetector refuses QR codes', async () => {
+    installDom()
+    vi.stubGlobal(
+      'BarcodeDetector',
+      class {
+        constructor() {
+          throw new TypeError('unsupported format')
+        }
+      },
+    )
+    installCamera(() => Promise.resolve(fakeStream().stream))
+    const fb = fakeFallback([[{ rawValue: 'SW1.fallback' }]])
+    const { scanner: sc, results } = scanner(fb.load)
+    await sc.start()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(results).toEqual(['SW1.fallback'])
+    sc.stop()
+  })
+
+  it('turns the camera off again when the decoder cannot be loaded', async () => {
+    installDom()
+    const { stream, tracks } = fakeStream()
+    installCamera(() => Promise.resolve(stream))
+    const { scanner: sc } = scanner(() => Promise.reject(new Error('offline')))
+    await expect(sc.start()).rejects.toThrow(/cannot scan QR codes/)
+    expect(tracks.every((t) => t.stopped)).toBe(true)
+  })
+
+  it('closes a decoder that finishes loading after stop()', async () => {
+    installDom()
+    const { stream, tracks } = fakeStream()
+    installCamera(() => Promise.resolve(stream))
+    const fb = fakeFallback([[{ rawValue: 'SW1.late' }]])
+    let release: (d: CodeDetector) => void = () => undefined
+    const { scanner: sc, results } = scanner(() => new Promise<CodeDetector>((r) => (release = r)))
+    const started = sc.start()
+    await vi.advanceTimersByTimeAsync(0)
+    sc.stop()
+    release(fb.detector)
+    await started
+    expect(fb.detector.closed).toBe(1)
+    expect(tracks.every((t) => t.stopped)).toBe(true)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(results).toEqual([])
+  })
+
+  it('closes the decoder when the camera cannot be opened', async () => {
+    installDom()
+    installCamera(() => Promise.reject(Object.assign(new Error('denied'), { name: 'NotAllowedError' })))
+    const fb = fakeFallback([])
+    const { scanner: sc } = scanner(fb.load)
+    await expect(sc.start()).rejects.toThrow(/Camera access was blocked/)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fb.detector.closed).toBe(1)
   })
 })
