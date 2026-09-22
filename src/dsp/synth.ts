@@ -180,6 +180,13 @@ export interface ToneSpec {
   /** Raised-cosine attack and release, default 1 ms. */
   readonly rampMs?: number
   readonly phase?: number
+  /** Fade from the onset, dB per second (a clink or a plucked note); default 0 (a steady beep). */
+  readonly decayDbPerS?: number
+  /**
+   * Room echo: instead of stopping at offS the tone dies away at this many dB per second (about
+   * 60 / RT60) until it is 60 dB down; default none (it stops after the release ramp).
+   */
+  readonly tailDbPerS?: number
 }
 
 /** Hann-windowed sine burst, like one Geiger click. */
@@ -226,19 +233,28 @@ export function synthSignal(spec: SignalSpec): Float32Array {
   for (const t of spec.tones ?? []) {
     const amp = 10 ** (t.levelDb / 20)
     const i0 = Math.max(0, Math.floor(t.onS * sr))
-    const i1 = Math.min(n, Math.ceil(t.offS * sr))
+    const tail = t.tailDbPerS !== undefined && t.tailDbPerS > 0 ? t.tailDbPerS : null
+    const iOff = Math.min(n, Math.ceil(t.offS * sr))
+    // With a tail the tone runs on past offS until it is 60 dB down.
+    const i1 = tail === null ? iOff : Math.min(n, iOff + Math.ceil((60 / tail) * sr))
     const ramp = Math.max(1, Math.round(((t.rampMs ?? 1) / 1000) * sr))
     const f0 = t.hz
     const f1 = t.hzEnd ?? t.hz
-    const len = Math.max(1, i1 - i0)
+    const len = Math.max(1, iOff - i0)
+    const decay = t.decayDbPerS ?? 0
     let phase = t.phase ?? 0
     for (let i = i0; i < i1; i++) {
       const pos = i - i0
-      const f = f0 + ((f1 - f0) * pos) / len
+      const f = i < iOff ? f0 + ((f1 - f0) * pos) / len : f1
       let env = 1
       if (pos < ramp) env = 0.5 - 0.5 * Math.cos((Math.PI * pos) / ramp)
-      const fromEnd = i1 - 1 - i
-      if (fromEnd < ramp) env = Math.min(env, 0.5 - 0.5 * Math.cos((Math.PI * fromEnd) / ramp))
+      if (tail === null) {
+        const fromEnd = i1 - 1 - i
+        if (fromEnd < ramp) env = Math.min(env, 0.5 - 0.5 * Math.cos((Math.PI * fromEnd) / ramp))
+      } else if (i >= iOff) {
+        env *= 10 ** ((-tail * ((i - iOff) / sr)) / 20)
+      }
+      if (decay !== 0) env *= 10 ** ((-decay * (pos / sr)) / 20)
       x[i] = x[i]! + amp * env * Math.sin(phase)
       phase += (2 * Math.PI * f) / sr
     }

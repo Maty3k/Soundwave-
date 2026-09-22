@@ -17,12 +17,15 @@ import type {
   Frame,
   HuntEvent,
   HuntView,
+  IgnoredReason,
   LiveView,
   Lock,
   LockMode,
   Reading,
+  SoundShape,
   Verdict,
 } from '../types.ts'
+import { fingerprintOf, shapeMatches, soundShape } from './shape.ts'
 import { locatePeak, lockToleranceBins, measureBandAt, median } from './spectrum.ts'
 
 // ---- Public helper types -----------------------------------------------------------------------
@@ -84,6 +87,9 @@ interface Segment {
   taintedFrames: number
   /** p.binF of frames with snr >= onsetSnrDb (bounded; see strongCap). */
   strongBinF: number[]
+  /** Band level and time of every frame (bounded; see strongCap), for the chirp's shape. */
+  levels: number[]
+  times: number[]
   /** Aborted by a frame gap: keeps tracking on/off (activity) but never becomes a Chirp. */
   discarded: boolean
   /** Opened in, or carried into, live mode: may become a Chirp but never a reading. */
@@ -192,6 +198,23 @@ export interface HuntState {
   live: LiveState | null
   liveBestDb: number | null
   liveRange: MeterRange | null
+  // Beep fingerprint and too-soon filter (createHunt option filterSounds)
+  readonly filterSounds: boolean
+  /** Shapes of the beep's last accepted chirps (at most fingerprintKeep); the lock's chirps first. */
+  shapes: SoundShape[]
+  /** Sounds not taken as the beep in the last heardItWindowMs, oldest first ("I heard it"). */
+  ignored: { readonly chirp: Chirp; readonly reason: IgnoredReason }[]
+  ignoredSounds: number
+}
+
+/** Options of createHunt. */
+export interface HuntOptions {
+  /**
+   * Take only sounds shaped like the beep (its fingerprint, learned from the lock's chirps and the
+   * readings since) and none that come too soon for its rhythm (tooSoonFrac). The hunting phone
+   * uses it; stations and extra microphones just follow the lock and report what they hear.
+   */
+  readonly filterSounds?: boolean
 }
 
 // ---- Pure helpers ------------------------------------------------------------------------------
@@ -287,7 +310,7 @@ function newLive(trainStartMs: number, onsets: number, cfg: Config): LiveState {
  * reading pipeline, so a chirp heard while listening is reading #1 (and #2 for a slow lock).
  * A live lock starts a live episode (and train) at lock.tMs.
  */
-export function createHunt(lock: Lock, cfg: Config): HuntState {
+export function createHunt(lock: Lock, cfg: Config, opts: HuntOptions = {}): HuntState {
   const state: HuntState = {
     f0Hz: lock.f0Hz,
     mode: lock.mode,
@@ -318,10 +341,15 @@ export function createHunt(lock: Lock, cfg: Config): HuntState {
     live: null,
     liveBestDb: null,
     liveRange: null,
+    filterSounds: opts.filterSounds ?? false,
+    shapes: [],
+    ignored: [],
+    ignoredSounds: 0,
   }
   const ignored: HuntEvent[] = []
   for (const c of lock.chirps) {
     keepChirp(state, c, cfg)
+    if (c.shape !== undefined) rememberShape(state, c.shape, cfg)
     addReading(state, chirpInput(c), ignored, cfg)
   }
   if (lock.mode === 'live') {
@@ -393,6 +421,10 @@ function pushFloor(state: HuntState, floorDb: number, cfg: Config): void {
 
 function accumulate(seg: Segment, f: SegFrame, cfg: Config): void {
   seg.frames++
+  if (seg.levels.length < strongCap(cfg)) {
+    seg.levels.push(f.levelDb)
+    seg.times.push(f.tMs)
+  }
   if (f.tainted) seg.taintedFrames++
   // Only while the tone is on: a bump or a door slam that clips the mic during the closing
   // off frames must not turn the chirp into a MAX reading. A tone loud enough to clip also clips
@@ -463,6 +495,8 @@ function segmentStep(state: HuntState, f: SegFrame, cfg: Config, events: HuntEve
       frames: 0,
       taintedFrames: 0,
       strongBinF: [],
+      levels: [],
+      times: [],
       discarded: false,
       noReading: state.mode === 'live',
     }
@@ -518,10 +552,104 @@ function closeSegment(state: HuntState, seg: Segment, cfg: Config, events: HuntE
     f0Hz: seg.peakBinF * seg.peakBinHz,
     clipped: seg.clipped,
     taintedFrac: seg.frames > 0 ? seg.taintedFrames / seg.frames : 0,
+    ...withShape(soundShape(seg.levels, seg.times, seg.peakDb - seg.noiseDb, cfg)),
+  }
+  const reads = !seg.noReading && state.mode === 'chirp'
+  if (reads && state.filterSounds) {
+    const reason = ignoreReason(state, chirp, cfg)
+    if (reason !== null) {
+      ignoreChirp(state, chirp, reason, events, cfg)
+      return
+    }
   }
   keepChirp(state, chirp, cfg)
   state.f0Hz = (1 - cfg.f0Alpha) * state.f0Hz + cfg.f0Alpha * chirp.f0Hz
-  if (!seg.noReading && state.mode === 'chirp') addReading(state, chirpInput(chirp), events, cfg)
+  if (reads) {
+    if (chirp.shape !== undefined) rememberShape(state, chirp.shape, cfg)
+    addReading(state, chirpInput(chirp), events, cfg)
+  }
+}
+
+/** { shape } when there is one (Chirp.shape is optional, never undefined). */
+function withShape(shape: SoundShape | null): { shape?: SoundShape } {
+  return shape === null ? {} : { shape }
+}
+
+function rememberShape(state: HuntState, shape: SoundShape, cfg: Config): void {
+  state.shapes.push(shape)
+  while (state.shapes.length > cfg.fingerprintKeep) state.shapes.shift()
+}
+
+/**
+ * Once the rhythm is known (a confident interval, or a single gap of at least longWaitS), a sound
+ * starting less than tooSoonFrac of the interval after the last reading's onset cannot be the beep.
+ */
+export function isTooSoon(state: HuntState, tMs: number, cfg: Config): boolean {
+  const last = state.lastOnsetMs
+  if (last === null || tMs <= last) return false
+  const est = estimateInterval(state.gapsMs, cfg)
+  if (est === null) return false
+  const known = est.confident || (state.gapsMs.length === 1 && est.medianMs >= cfg.longWaitS * 1000)
+  return known && tMs - last < cfg.tooSoonFrac * est.medianMs
+}
+
+/**
+ * Why a chirp is not the beep, or null when it may be: a shape unlike the beep's fingerprint, or a
+ * start too soon for its rhythm (not checked for a chirp joining the open reading's burst).
+ */
+function ignoreReason(state: HuntState, chirp: Chirp, cfg: Config): IgnoredReason | null {
+  const fp = fingerprintOf(state.shapes)
+  if (fp !== null && chirp.shape !== undefined && !shapeMatches(chirp.shape, fp, cfg)) return 'shape'
+  const g = state.group
+  const joinsBurst = g !== null && chirp.tOnsetMs - g.lastEndMs <= cfg.groupGapMs
+  if (!joinsBurst && isTooSoon(state, chirp.tOnsetMs, cfg)) return 'tooSoon'
+  return null
+}
+
+/** Sounds kept for "I heard it" at most (besides the heardItWindowMs age limit). */
+const IGNORED_KEEP = 20
+
+function ignoreChirp(state: HuntState, chirp: Chirp, reason: IgnoredReason, events: HuntEvent[], cfg: Config): void {
+  state.ignored.push({ chirp, reason })
+  while (state.ignored.length > 0 && chirp.tOnsetMs - state.ignored[0]!.chirp.tOnsetMs > cfg.heardItWindowMs) state.ignored.shift()
+  while (state.ignored.length > IGNORED_KEEP) state.ignored.shift()
+  state.ignoredSounds++
+  events.push({ type: 'ignored', reason, tMs: chirp.tOnsetMs })
+}
+
+/** Outcome of heardIt. */
+export type HeardItResult = 'counted' | 'already' | 'none'
+
+/**
+ * "I heard it" while hunting (chirp mode): the person just heard the beep, taken to be the latest
+ * sound at its pitch of the last heardItWindowMs. When that sound was set aside (wrong shape, or
+ * too soon) it becomes a reading ('counted') and its shape the beep's fingerprint: the person knows
+ * the beep better than the filter does. When it is a reading already: 'already'. 'none' when
+ * nothing at the beep's pitch was caught. The events are the new reading's.
+ */
+export function heardIt(state: HuntState, nowMs: number, cfg: Config): { result: HeardItResult; events: HuntEvent[] } {
+  const events: HuntEvent[] = []
+  if (state.mode !== 'chirp') return { result: 'none', events }
+  const since = nowMs - cfg.heardItWindowMs
+  const inWindow = (t: number): boolean => t >= since && t <= nowMs
+  const last = state.readings[state.readings.length - 1]
+  const readingMs = last !== undefined && inWindow(last.tMs) ? last.tMs : -Infinity
+  let pick = -1
+  for (let i = state.ignored.length - 1; i >= 0; i--) {
+    if (inWindow(state.ignored[i]!.chirp.tOnsetMs)) {
+      pick = i
+      break
+    }
+  }
+  if (pick < 0 || state.ignored[pick]!.chirp.tOnsetMs <= readingMs) {
+    return { result: readingMs > -Infinity ? 'already' : 'none', events }
+  }
+  const { chirp } = state.ignored.splice(pick, 1)[0]!
+  if (chirp.shape !== undefined) state.shapes = [chirp.shape]
+  keepChirp(state, chirp, cfg)
+  state.f0Hz = (1 - cfg.f0Alpha) * state.f0Hz + cfg.f0Alpha * chirp.f0Hz
+  addReading(state, chirpInput(chirp), events, cfg)
+  return { result: 'counted', events }
 }
 
 function keepChirp(state: HuntState, chirp: Chirp, cfg: Config): void {
@@ -905,6 +1033,7 @@ export function huntView(state: HuntState, nowMs: number, cfg: Config): HuntView
     bandFloorDb: state.bandFloorDb,
     snrDb: state.snrDb,
     missedChirps: state.missedChirps,
+    ignoredSounds: state.ignoredSounds,
     chirps: state.chirps.slice(),
   }
 }

@@ -53,6 +53,18 @@ export interface Peak {
 }
 
 /** One heard chirp (listening sighting or hunting segment). */
+/** How a sound's level runs over time (src/dsp/shape.ts): its core length and how fast it fades. */
+export interface SoundShape {
+  /** Span of frames within config.coreDropDb of the loudest one. */
+  readonly coreMs: number
+  readonly coreFrames: number
+  /**
+   * Level fall across the core (dB per second; positive = fading, about 0 for a steady beep), or
+   * null when it cannot be judged (a core too short, or a sound too faint).
+   */
+  readonly fadeDbPerS: number | null
+}
+
 export interface Chirp {
   readonly tOnsetMs: number
   /** Time of the last frame above the offset threshold. */
@@ -70,6 +82,8 @@ export interface Chirp {
   readonly clipped: boolean
   /** Share of the chirp's frames that were flagged clickTainted. */
   readonly taintedFrac: number
+  /** Its shape, when measured (detector sightings and hunt chirps). */
+  readonly shape?: SoundShape
 }
 
 export type LockMode = 'chirp' | 'live'
@@ -177,15 +191,22 @@ export interface HuntView {
   readonly bandFloorDb: number
   readonly snrDb: number
   readonly missedChirps: number
+  /** Sounds at the beep's pitch that were not taken as the beep (wrong shape, or too soon). */
+  readonly ignoredSounds: number
   /** Last raw chirps (debug), most recent last. */
   readonly chirps: readonly Chirp[]
 }
+
+/** Why a sound at the beep's pitch was not taken as the beep. */
+export type IgnoredReason = 'shape' | 'tooSoon'
 
 export type HuntEvent =
   | { readonly type: 'onset' }
   | { readonly type: 'reading'; readonly reading: Reading }
   | { readonly type: 'readingUpdated'; readonly reading: Reading }
   | { readonly type: 'mode'; readonly mode: LockMode }
+  /** A sound at the beep's pitch was not taken as the beep; "I heard it" can still count it. */
+  | { readonly type: 'ignored'; readonly reason: IgnoredReason; readonly tMs: number }
   /** An open chirp was discarded because of a frame gap. */
   | { readonly type: 'missed' }
 

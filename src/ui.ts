@@ -33,6 +33,7 @@ import {
   formatPct,
   FOUND_COPY,
   HISTORY_COPY,
+  ignoredSoundsText,
   foundListenersParts,
   foundSummaryParts,
   GUIDANCE,
@@ -86,6 +87,11 @@ export interface UiHandlers {
   onNotIt(): void
   /** Listening: lock onto the pending beep now instead of waiting for it to chirp again. */
   onUseNow(): void
+  /**
+   * "I heard it": the person just heard the beep. Listening: look back config.heardItWindowMs and
+   * lock on it. Hunting: count a sound the filters set aside in that window.
+   */
+  onHeardIt(): void
   /**
    * Hunting: listen again. The ui asks for confirmation itself once the hunt has
    * cfg.stopConfirmMinReadings readings, so this call is always final.
@@ -537,7 +543,12 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
         rawBadge.el,
       ),
     ),
-    h('div', { class: 'bottombar' }, button(T.stop, () => handlers.onStopRequest(), 'secondary')),
+    h(
+      'div',
+      { class: 'bottombar' },
+      button(T.heardIt, () => handlers.onHeardIt(), 'primary'),
+      button(T.stop, () => handlers.onStopRequest(), 'secondary'),
+    ),
   )
 
   let pendingKey = ''
@@ -739,6 +750,9 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
   const hearing = h('span', { class: 'hearing', hidden: true }, h('span', { class: 'hearing-dot', 'aria-hidden': 'true' }), H.hearing)
   const statusText = h('span', { class: 'countdown-text' })
   const statusBar = h('div', { class: 'countdown', 'data-kind': 'none' }, hearing, statusText)
+  // Chirp mode: tell the app a beep was just heard (counts one the filters set aside).
+  const heardNote = h('p', { class: 'heard-row__note', hidden: true })
+  const heardRow = h('div', { class: 'heard-row' }, button(H.heardIt, () => handlers.onHeardIt(), 'quiet'), heardNote)
   const phaseLive = h('p', { class: 'sr-only', 'aria-live': 'polite' })
 
   // ---- Meter panel: meter (with Start over here), history strip, guidance.
@@ -860,6 +874,7 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
     readout,
     liveReadout,
     statusBar,
+    heardRow,
     phaseLive,
     tablist,
     panelHost,
@@ -1003,6 +1018,10 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
       const hearingOnly = mode === 'chirp' && isHearing && kind !== 'hold' && kind !== 'late' && kind !== 'wait'
       setText(statusText, text)
       setHidden(statusText, text === '' || hearingOnly)
+      setHidden(heardRow, mode !== 'chirp')
+      const ignoredText = ignoredSoundsText(view?.ignoredSounds ?? 0)
+      setText(heardNote, ignoredText)
+      setHidden(heardNote, ignoredText === '')
       setHidden(hearing, !isHearing)
       setAttr(statusBar, 'data-kind', kind)
       if (kind !== phase) {

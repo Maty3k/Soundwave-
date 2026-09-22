@@ -59,11 +59,13 @@ export const COPY = {
   },
   listening: {
     title: 'Listening for the beep…',
-    tip: 'Stay quiet and still. Chirps every 30–60 s are normal.',
+    tip: 'Stay quiet and still. Heard the beep? Tap I heard it within 10 seconds.',
     noBeep: 'No beep yet. Move to where you last heard it, turn off fans or the TV, and wait for the next chirp.',
     micLabel: 'Mic',
     elapsedLabel: 'Elapsed',
     useNow: 'Use it now',
+    /** Looks back 10 s for the beep the person just heard and locks on it. */
+    heardIt: 'I heard it',
     stop: 'Stop',
   },
   rawAudio: {
@@ -79,6 +81,8 @@ export const COPY = {
   },
   hunting: {
     title: 'Hunting for the beep',
+    /** Counts a beep the filters set aside in the last 10 s. */
+    heardIt: 'I heard the beep',
     modeChirp: 'Chirp',
     modeLive: 'Live',
     frequencyLabel: 'Locked frequency',
@@ -158,6 +162,14 @@ export const COPY = {
 
 /** Toast texts that main.ts dispatches (aliases of COPY.toasts). */
 export const TEXT = {
+  /** "I heard it" while listening found no steady tone in the last 10 s. */
+  heardNothingListening: 'Nothing clear in the last 10 seconds. Tap right after the next beep.',
+  /** "I heard the beep" while hunting: a set-aside sound became a reading. */
+  heardCounted: 'Counted it.',
+  /** ... a reading had already started in the last 10 s. */
+  heardAlready: 'Already counted.',
+  /** ... nothing at the beep's pitch in the last 10 s. */
+  heardNothingHunting: "Didn't catch a beep at this pitch in the last 10 seconds. It may be too faint here.",
   wakeLockFailed: COPY.toasts.wakeLock,
   modeLive: COPY.toasts.live,
   modeChirp: COPY.toasts.chirp,
@@ -1195,4 +1207,13 @@ export function historyDetailParts(record: HuntRecord): string[] {
 /** Accessible name of a past hunt's Remove button. */
 export function historyRemoveLabel(record: HuntRecord): string {
   return `Remove ${historyTitle(record)} from past hunts`
+}
+
+// ---- Beep fingerprint -----------------------------------------------------------------------------
+
+/** Under 'I heard the beep': sounds at the beep's pitch that were not taken as the beep; '' for none. */
+export function ignoredSoundsText(n: number): string {
+  const k = Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0
+  if (k === 0) return ''
+  return k === 1 ? 'Ignored 1 other sound at this pitch' : `Ignored ${groupThousands(k)} other sounds at this pitch`
 }

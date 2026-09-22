@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CONFIG, withConfig } from '../config.ts'
 import type { Config } from '../config.ts'
 import type { Frame, Lock, Peak, PendingBeep } from '../types.ts'
-import { createDetector, detectStep, findPeaks, lockFromPending, pendingBeep, recentPeaks, slowLockSnrAt } from './detect.ts'
+import { createDetector, detectStep, findPeaks, lockFromPending, lockFromRecent, pendingBeep, recentPeaks, slowLockSnrAt } from './detect.ts'
 import { createHunt, huntView } from './hunt.ts'
 import type { DetectorOptions, DetectorState } from './detect.ts'
 import {
@@ -981,7 +981,8 @@ describe('detectStep: tracker rules', () => {
   describe('memory of sightings closed out of onset order', () => {
     // A long sighting at bin 300 (onset 0 ms, 2 s long) closes after a short one at bin `shortBin`
     // (onset 1000 ms), so the memory holds them in closing order, not onset order.
-    const cfg = withConfig({ slowLockMemoryMs: 5000, clearSightingMemoryMs: 5000, sustainedLockMs: 60_000 })
+    // A 2 s sighting and a 100 ms one are not the same beep (sameShape): shapes are not what this is about.
+    const cfg = withConfig({ slowLockMemoryMs: 5000, clearSightingMemoryMs: 5000, sustainedLockMs: 60_000, shapeCoreShorterRatio: 1000, shapeCoreLongerRatio: 1000 })
     const longHits = 2000 / HOP + 1
     const shortFrom = 1000 / HOP
     const scene = (shortBin: number, thirdBin: number, thirdMs: number): Frame[] => {
@@ -1313,5 +1314,70 @@ describe('recentPeaks', () => {
     const expected: number[] = []
     for (let i = 0; i < count; i++) if (i * HOP > now - CONFIG.candidateRingMs && i % 7 !== 3) expected.push(binOf(i))
     expect(got.map((p) => p.bin)).toEqual(expected)
+  })
+})
+
+// ---- Same shape to confirm, and "I heard it" ------------------------------------------------------
+
+describe('detectStep: a beep is confirmed only by a sound of its shape', () => {
+  const LEVEL40 = toneLevelForSnr(40, NOISE_DB, N)
+  const beep = (onS: number): ToneSpec => ({ hz: 3120, levelDb: LEVEL40, onS, offS: onS + 0.15, rampMs: 3 })
+  const clink = (onS: number): ToneSpec => ({ hz: 3120, levelDb: LEVEL40, onS, offS: onS + 1, rampMs: 1, decayDbPerS: 60 })
+
+  it('does not lock on a beep and a clink at the same pitch, but on two beeps', () => {
+    expect(runDetector(sceneFrames({ durationS: 9, seed: 21, tones: [beep(1), clink(5)] })).lock).toBeNull()
+    expect(runDetector(sceneFrames({ durationS: 9, seed: 21, tones: [clink(1), beep(5)] })).lock).toBeNull()
+    const lock = runDetector(sceneFrames({ durationS: 9, seed: 21, tones: [beep(1), beep(5)] })).lock
+    expect(lock?.reason).toBe('slow')
+    expect(lock!.chirps.every((c) => c.shape !== undefined)).toBe(true)
+  }, 30_000)
+})
+
+describe('lockFromRecent ("I heard it")', () => {
+  const LEVEL30 = toneLevelForSnr(30, NOISE_DB, N)
+
+  function listened(tones: readonly ToneSpec[], durationS: number, opts: DetectorOptions = {}): DetectorState {
+    const det = createDetector(CONFIG, opts)
+    for (const f of sceneFrames({ durationS, seed: 31, tones })) expect(detectStep(det, f, CONFIG)).toBeNull()
+    return det
+  }
+
+  it('locks on the beep of the last few seconds without waiting for a second one', () => {
+    const det = listened([{ hz: 3120, levelDb: LEVEL30, onS: 2, offS: 2.15, rampMs: 3 }], 5)
+    const lock = lockFromRecent(det, 5000, CONFIG.heardItWindowMs, CONFIG)!
+    expect(lock.reason).toBe('manual')
+    expect(lock.mode).toBe('chirp')
+    expect(Math.abs(lock.f0Hz - 3120)).toBeLessThan(2)
+    expect(lock.chirps).toHaveLength(1)
+    expect(Math.abs(lock.chirps[0]!.tOnsetMs - 2000)).toBeLessThan(150)
+    expect(lock.chirps[0]!.shape).toBeDefined()
+    // The detector is finished, like after "Use it now".
+    expect(det.done).toBe(true)
+    expect(lockFromRecent(det, 5000, CONFIG.heardItWindowMs, CONFIG)).toBeNull()
+  }, 30_000)
+
+  it('picks the clearest of several sounds in the window', () => {
+    const det = listened(
+      [
+        { hz: 2500, levelDb: toneLevelForSnr(20, NOISE_DB, N), onS: 1, offS: 1.2, rampMs: 3 },
+        { hz: 4100, levelDb: LEVEL30, onS: 3, offS: 3.2, rampMs: 3 },
+      ],
+      5,
+    )
+    expect(Math.abs(lockFromRecent(det, 5000, CONFIG.heardItWindowMs, CONFIG)!.f0Hz - 4100)).toBeLessThan(2)
+  }, 30_000)
+
+  it('finds nothing in noise, before the window or at an excluded frequency, and keeps listening', () => {
+    const quiet = listened([], 4)
+    expect(lockFromRecent(quiet, 4000, CONFIG.heardItWindowMs, CONFIG)).toBeNull()
+    expect(quiet.done).toBe(false)
+    const early = listened([{ hz: 3120, levelDb: LEVEL30, onS: 0.5, offS: 0.65, rampMs: 3 }], 4)
+    expect(lockFromRecent(early, 4000, 2000, CONFIG)).toBeNull()
+    const excluded = listened([{ hz: 3120, levelDb: LEVEL30, onS: 2, offS: 2.15, rampMs: 3 }], 4, { excludeHz: [3120] })
+    expect(lockFromRecent(excluded, 4000, CONFIG.heardItWindowMs, CONFIG)).toBeNull()
+  }, 30_000)
+
+  it('keeps enough frames to look back heardItWindowMs', () => {
+    expect(CONFIG.candidateRingMs).toBeGreaterThanOrEqual(CONFIG.heardItWindowMs)
   })
 })

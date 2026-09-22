@@ -6,8 +6,9 @@
  * steady frequency is a "sighting" (one heard chirp). The lock policy then decides:
  * - fast (only with config.lockConfirmChirps 1): one sighting whose best per-bin SNR reaches
  *   fastLockSnrDb;
- * - slow: two sightings at >= slowLockSnrAt, within lock tolerance and >= slowLockGapMs apart, both
- *   clear (isClearSighting) when they are more than slowLockMemoryMs apart (with
+ * - slow: two sightings at >= slowLockSnrAt, within lock tolerance, >= slowLockGapMs apart and of
+ *   the same shape (sameShape), both clear (isClearSighting) when they are more than
+ *   slowLockMemoryMs apart (with
  *   lockConfirmChirps 2 this is the only way a chirp locks: the second sighting confirms the first);
  * - sustained: a stable track that is still open after sustainedLockMs (continuous tone, live mode).
  * config.lockConfirmChirps is limited to 1 or 2: values above 2 act as 2 (a confirmed pair is the
@@ -17,8 +18,9 @@
  * Pure and deterministic; no DOM or Web Audio.
  */
 import type { Config } from '../config.ts'
-import type { Chirp, Frame, Lock, Peak, PendingBeep } from '../types.ts'
+import type { Chirp, Frame, Lock, Peak, PendingBeep, SoundShape } from '../types.ts'
 import { bandFloorDb, bandLevelDb, localFloorDb, lockToleranceBins, parabolicPeak, peakWidthBins } from './spectrum.ts'
+import { sameShape, soundShape } from './shape.ts'
 
 /** Options fixed for the lifetime of one detector. */
 export interface DetectorOptions {
@@ -47,6 +49,9 @@ interface Track {
   bestBandFloorDb: number
   clipped: boolean
   taintedFrames: number
+  /** Band level and time of each matched frame (bounded), for the sighting's shape. */
+  readonly levels: number[]
+  readonly times: number[]
   readonly binHz: number
   /**
    * False for tracks opened on a discontinuity (gap frame, new bin width, new time base): the
@@ -216,7 +221,7 @@ export function detectStep(state: DetectorState, frame: Frame, cfg: Config): Loc
 
 /**
  * The strongest peak of each frame whose time lies in (nowMs - windowMs, nowMs], oldest first.
- * Only the last config.candidateRingMs of frames are kept. For a future "I hear it now" button.
+ * Only the last config.candidateRingMs of frames are kept. lockFromRecent ("I heard it") reads them.
  */
 export function recentPeaks(state: DetectorState, nowMs: number, windowMs: number): Peak[] {
   const out: Peak[] = []
@@ -282,7 +287,119 @@ export function lockFromPending(state: DetectorState, nowMs: number, cfg: Config
   }
 }
 
+/**
+ * "I heard it" while listening: the beep the person just heard, looked for among the strongest
+ * peak of each frame in (nowMs - windowMs, nowMs] (recentPeaks). Frames whose peaks lie within
+ * trackMatchBins of a sound's mean bin, with at most trackCloseMissFrames frames missing in
+ * between, form that sound. One that spans persistFrames frames and persistSpanMs, holds its pitch
+ * (robust spread below maxFreqStdBins) and is not within lock tolerance of an excluded frequency
+ * counts; the one with the highest per-bin SNR wins (the latest on a tie). Returns a manual Lock on
+ * it (mode 'live', without chirps, when it lasted longer than maxChirpMs) and finishes the
+ * detector, or null, leaving the detector listening, when the window holds no such sound.
+ */
+export function lockFromRecent(state: DetectorState, nowMs: number, windowMs: number, cfg: Config): Lock | null {
+  if (state.done) return null
+  interface Heard {
+    startMs: number
+    endMs: number
+    lastFrame: number
+    meanBin: number
+    bins: number[]
+    levels: number[]
+    times: number[]
+    maxSnrDb: number
+    best: Peak
+    binHz: number
+  }
+  const done: Heard[] = []
+  let open: Heard[] = []
+  const cap = state.ringT.length
+  let frame = 0
+  for (let i = 0; i < state.ringCount; i++) {
+    const idx = (state.ringHead + i) % cap
+    const t = state.ringT[idx]!
+    if (t <= nowMs - windowMs || t > nowMs) continue
+    frame++
+    open = open.filter((h) => {
+      if (frame - h.lastFrame <= cfg.trackCloseMissFrames) return true
+      done.push(h)
+      return false
+    })
+    const p = state.ringPeaks[idx]
+    if (p == null || !(p.binF > 0)) continue
+    let match: Heard | null = null
+    for (const h of open) {
+      const d = Math.abs(p.binF - h.meanBin)
+      if (d <= cfg.trackMatchBins && (match === null || d < Math.abs(p.binF - match.meanBin))) match = h
+    }
+    if (match === null) {
+      open.push({ startMs: t, endMs: t, lastFrame: frame, meanBin: p.binF, bins: [p.binF], levels: [p.bandDb], times: [t], maxSnrDb: p.snrDb, best: p, binHz: p.f0Hz / p.binF })
+      continue
+    }
+    match.endMs = t
+    match.lastFrame = frame
+    match.bins.push(p.binF)
+    match.meanBin += (p.binF - match.meanBin) / match.bins.length
+    if (match.levels.length < levelsCap(cfg)) {
+      match.levels.push(p.bandDb)
+      match.times.push(t)
+    }
+    if (p.snrDb > match.maxSnrDb) {
+      match.maxSnrDb = p.snrDb
+      match.best = p
+    }
+  }
+  done.push(...open)
+
+  let pick: Heard | null = null
+  for (const h of done) {
+    if (h.bins.length < cfg.persistFrames || h.endMs - h.startMs < cfg.persistSpanMs) continue
+    if (robustSpreadBins(h.bins) >= cfg.maxFreqStdBins) continue
+    if (isExcluded(h.meanBin, h.binHz, state.excludeHz, cfg)) continue
+    if (pick === null || h.maxSnrDb > pick.maxSnrDb || (h.maxSnrDb === pick.maxSnrDb && h.endMs > pick.endMs)) pick = h
+  }
+  if (pick === null) return null
+
+  state.done = true
+  state.lastPending = null
+  const f0Hz = pick.meanBin * pick.binHz
+  const durationMs = pick.endMs - pick.startMs
+  if (durationMs > cfg.maxChirpMs) {
+    return { f0Hz, mode: 'live', reason: 'manual', tMs: nowMs, snrDb: pick.maxSnrDb, chirps: [] }
+  }
+  const floor = bandFloorDb(pick.best.floorDb, cfg.bandBins, cfg.bandFloorOffsetDb)
+  const chirp: Chirp = {
+    tOnsetMs: pick.startMs,
+    tEndMs: pick.endMs,
+    durationMs,
+    peakDb: pick.best.bandDb,
+    bandFloorDb: floor,
+    snrDb: pick.best.bandDb - floor,
+    f0Hz,
+    clipped: false,
+    taintedFrac: 0,
+    ...withShape(soundShape(pick.levels, pick.times, pick.maxSnrDb, cfg)),
+  }
+  return { f0Hz, mode: 'chirp', reason: 'manual', tMs: nowMs, snrDb: pick.maxSnrDb, chirps: [chirp] }
+}
+
 // ---- Internals ---------------------------------------------------------------------------------
+
+/** { shape } when there is one (Chirp.shape is optional, never undefined). */
+function withShape(shape: SoundShape | null): { shape?: SoundShape } {
+  return shape === null ? {} : { shape }
+}
+
+/** Robust spread (1.4826 x median absolute deviation) of bin positions. */
+function robustSpreadBins(bins: readonly number[]): number {
+  const med = (xs: readonly number[]): number => {
+    const s = [...xs].sort((a, b) => a - b)
+    const m = s.length >> 1
+    return s.length % 2 === 1 ? s[m]! : (s[m - 1]! + s[m]!) / 2
+  }
+  const m = med(bins)
+  return 1.4826 * med(bins.map((b) => Math.abs(b - m)))
+}
 
 function isLocalMax(db: Float32Array, k: number, half: number): boolean {
   const v = db[k]!
@@ -361,16 +478,27 @@ function newTrack(p: Peak, frame: Frame, cfg: Config, onsetSeen: boolean): Track
     bestBandFloorDb: bandFloorDb(p.floorDb, cfg.bandBins, cfg.bandFloorOffsetDb),
     clipped: frame.clipFrac > cfg.clipFraction,
     taintedFrames: frame.clickTainted ? 1 : 0,
+    levels: [p.bandDb],
+    times: [frame.tMs],
     binHz: frame.binHz,
     onsetSeen,
     hit: true,
   }
 }
 
+/** Levels kept per track: a sighting is at most maxChirpMs long. */
+function levelsCap(cfg: Config): number {
+  return Math.ceil(cfg.maxChirpMs / cfg.hopMs) + 8
+}
+
 function addToTrack(t: Track, p: Peak, frame: Frame, cfg: Config): void {
   t.lastMs = frame.tMs
   t.frames++
   t.misses = 0
+  if (t.levels.length < levelsCap(cfg)) {
+    t.levels.push(p.bandDb)
+    t.times.push(frame.tMs)
+  }
   const d = p.binF - t.meanBin
   t.meanBin += d / t.frames
   t.m2 += d * (p.binF - t.meanBin)
@@ -406,6 +534,7 @@ function toSighting(t: Track, cfg: Config): Sighting | null {
     f0Hz: t.meanBin * t.binHz,
     clipped: t.clipped,
     taintedFrac: t.taintedFrames / t.frames,
+    ...withShape(soundShape(t.levels, t.times, t.maxSnrDb, cfg)),
   }
   return { chirp, maxSnrDb: t.maxSnrDb, binHz: t.binHz }
 }
@@ -459,7 +588,9 @@ function lockFromSightings(state: DetectorState, sightings: readonly Sighting[],
       // Beyond the short memory only two clear sightings confirm each other: a faint one (often
       // microphone noise) must not confirm a beep heard up to clearSightingMemoryMs earlier.
       const trusted = gapMs <= cfg.slowLockMemoryMs || (isClearSighting(s, cfg) && isClearSighting(e, cfg))
-      if (apart && near && trusted && (partner === null || e.chirp.tOnsetMs > partner.chirp.tOnsetMs)) partner = e
+      // The same beep twice: about as long and fading alike (a clink does not confirm a beep).
+      const alike = sameShape(s.chirp.shape, e.chirp.shape, cfg)
+      if (apart && near && trusted && alike && (partner === null || e.chirp.tOnsetMs > partner.chirp.tOnsetMs)) partner = e
     }
     if (partner !== null) {
       return {

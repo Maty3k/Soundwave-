@@ -114,6 +114,7 @@ function chirpView(readings: readonly Reading[]): HuntView {
     bandFloorDb: -96,
     snrDb: 6,
     missedChirps: 0,
+    ignoredSounds: 0,
     chirps: [],
   }
 }

@@ -57,8 +57,8 @@ import { HeadingSource } from './orientation.ts'
 import { acquireMic, stopMic, type MicHandle } from './audio/mic.ts'
 import { Engine } from './audio/engine.ts'
 import { Clicker } from './audio/clicker.ts'
-import { createDetector, detectStep, lockFromPending, pendingBeep, type DetectorState } from './dsp/detect.ts'
-import { createHunt, huntStep, huntView, resetBest, type HuntState } from './dsp/hunt.ts'
+import { createDetector, detectStep, lockFromPending, lockFromRecent, pendingBeep, type DetectorState } from './dsp/detect.ts'
+import { createHunt, heardIt, huntStep, huntView, resetBest, type HuntState } from './dsp/hunt.ts'
 import { chooseClickFreqSticky, clickRateHz, vibrationTier } from './dsp/geiger.ts'
 import { addRadarSample, clearRadar, createRadar, radarView, raiseLastSample, type RadarState } from './dsp/radar.ts'
 import { StationHub } from './hub.ts'
@@ -191,6 +191,7 @@ const ui = mountUi(
     onHoldLock: () => store.dispatch({ type: 'holdLock' }),
     onNotIt,
     onUseNow,
+    onHeardIt,
     onRelistenConfirm,
     onResetBest,
     onFound,
@@ -410,7 +411,8 @@ function onLock(s: Session, lock: Lock, tMs: number): void {
   s.detector = null
   huntSeq++
   huntRecordId = null
-  s.hunt = createHunt(lock, CONFIG)
+  // Only sounds shaped like the beep, and not too soon for its rhythm, become readings.
+  s.hunt = createHunt(lock, CONFIG, { filterSounds: true })
   s.carrierHz = chooseClickFreqSticky(lock.f0Hz, null, CONFIG)
   s.clicker.setCarrier(s.carrierHz)
   lastPendingKey = ''
@@ -476,6 +478,7 @@ function handleHuntEvents(s: Session, events: readonly HuntEvent[]): void {
       }
       case 'onset':
       case 'missed':
+      case 'ignored':
         break
     }
   }
@@ -530,6 +533,29 @@ function onNotIt(): void {
   if (lock) exclusions.push({ hz: lock.f0Hz, untilMs: now() + CONFIG.notItExcludeMs })
   restartListening()
   store.dispatch({ type: 'notIt', nowMs: now() })
+}
+
+/**
+ * "I heard it". Listening: lock on the steadiest clear tone of the last heardItWindowMs. Hunting:
+ * count a sound the filters set aside in that window (or say it was already counted, or not caught).
+ */
+function onHeardIt(): void {
+  const s = session
+  if (!s) return
+  const kind = store.get().screen.kind
+  const t = now()
+  if (kind === 'listening' && s.detector) {
+    const lock = lockFromRecent(s.detector, t, CONFIG.heardItWindowMs, CONFIG)
+    if (lock) onLock(s, lock, t)
+    else toast(TEXT.heardNothingListening)
+    return
+  }
+  if (kind === 'hunting' && s.hunt) {
+    const { result, events } = heardIt(s.hunt, t, CONFIG)
+    handleHuntEvents(s, events)
+    store.dispatch({ type: 'hunt', view: huntView(s.hunt, t, CONFIG) })
+    toast(result === 'counted' ? TEXT.heardCounted : result === 'already' ? TEXT.heardAlready : TEXT.heardNothingHunting)
+  }
 }
 
 function onUseNow(): void {

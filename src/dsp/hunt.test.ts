@@ -6,11 +6,13 @@ import {
   countdownAt,
   createHunt,
   estimateInterval,
+  heardIt,
   huntStep,
   huntView,
   reconcileGap,
   resetBest,
   robustStdBins,
+  isTooSoon,
   updateRange,
 } from './hunt.ts'
 import type { HuntState } from './hunt.ts'
@@ -1061,4 +1063,120 @@ describe('whole pipeline', () => {
     expect(v.readings).toEqual([])
     expect(v.mode).toBe('chirp')
   }, 30_000) // about 15,000 reference-FFT frames; slower when other suites run in parallel
+})
+
+// ---- Beep fingerprint, too-soon filter, "I heard the beep" -------------------------------------
+
+describe('beep fingerprint and too-soon filter (filterSounds)', () => {
+  const CLEAR = toneLevelForSnr(40, NOISE_DB, N)
+  /** A steady 150 ms beep at F0. */
+  const beep = (onS: number, extra: Partial<ToneSpec> = {}): ToneSpec => ({ hz: F0, levelDb: CLEAR, onS, offS: onS + 0.15, rampMs: 3, ...extra })
+  /** A clink at F0: sharp start, then fading 60 dB per second. */
+  const clink = (onS: number): ToneSpec => ({ hz: F0, levelDb: CLEAR, onS, offS: onS + 1, rampMs: 1, decayDbPerS: 60 })
+  const seconds = (rs: readonly Reading[]): number[] => rs.map((r) => Math.round(r.tMs / 1000))
+  const FILTER = { filterSounds: true }
+
+  it('takes the beeps and sets aside clinks at the same pitch', () => {
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(24, [beep(1), clink(6), beep(11), clink(16), beep(21)])))
+    expect(seconds(newReadings(events))).toEqual([1, 11, 21])
+    const ignored = events.filter((e) => e.event.type === 'ignored').map((e) => e.event)
+    expect(ignored).toHaveLength(2)
+    expect(ignored.every((e) => e.type === 'ignored' && e.reason === 'shape')).toBe(true)
+    expect(huntView(hunt, 24_000, CONFIG).ignoredSounds).toBe(2)
+  }, 30_000)
+
+  it('without filterSounds (stations, extra mics) every sound is a reading', () => {
+    const hunt = createHunt(lockAt(), CONFIG)
+    const events = feed(hunt, framesOf(samplesOf(24, [beep(1), clink(6), beep(11), clink(16), beep(21)])))
+    expect(seconds(newReadings(events))).toEqual([1, 6, 11, 16, 21])
+    expect(count(events, 'ignored')).toBe(0)
+  }, 30_000)
+
+  it('keeps taking the beep far away, with a room echo, or both', () => {
+    const faint = toneLevelForSnr(15, NOISE_DB, N)
+    const tones = [
+      beep(1),
+      beep(11, { tailDbPerS: 100 }), // RT60 0.6 s
+      beep(21, { levelDb: faint }),
+      beep(31, { levelDb: toneLevelForSnr(25, NOISE_DB, N), tailDbPerS: 75 }),
+    ]
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(34, tones)))
+    expect(seconds(newReadings(events))).toEqual([1, 11, 21, 31])
+    expect(count(events, 'ignored')).toBe(0)
+  }, 30_000)
+
+  it('learns the fingerprint from the lock\'s chirps', () => {
+    // A detector sighting of the beep, shape included: the first sound of the hunt is already judged.
+    const seed = createHunt(lockAt(), CONFIG)
+    feed(seed, framesOf(samplesOf(3, [beep(1)])))
+    const lockChirp = seed.chirps[0]!
+    expect(lockChirp.shape).toBeDefined()
+    const hunt = createHunt(lockAt({ chirps: [lockChirp] }), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(6, [clink(4)])))
+    expect(newReadings(events)).toEqual([])
+    expect(count(events, 'ignored')).toBe(1)
+  }, 30_000)
+
+  it('sets aside a sound that comes too soon for a known rhythm, but not a burst member', () => {
+    // Beeps every 10 s; an extra beep 4 s after one (less than half the interval) is not the alarm.
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(38, [beep(1), beep(11), beep(21), beep(31), beep(35)])))
+    expect(seconds(newReadings(events))).toEqual([1, 11, 21, 31])
+    const ignored = events.filter((e) => e.event.type === 'ignored').map((e) => e.event)
+    expect(ignored).toEqual([{ type: 'ignored', reason: 'tooSoon', tMs: expect.any(Number) }])
+    // A UPS-style burst (beeps 1 s apart) merges into one reading as before.
+    const ups = createHunt(lockAt(), CONFIG, FILTER)
+    const burst = feed(ups, framesOf(samplesOf(26, [1, 2, 3, 11, 12, 13, 21, 22, 23].map((s) => beep(s)))))
+    expect(seconds(newReadings(burst))).toEqual([1, 11, 21])
+    expect(count(burst, 'ignored')).toBe(0)
+  }, 30_000)
+
+  it('knows the rhythm from a confident interval or one long gap', () => {
+    const longMs = 8 * 60_000
+    const slow = createHunt(lockAt({ chirps: [chirpAt(0, -70), chirpAt(longMs, -70)] }), CONFIG, FILTER)
+    expect(isTooSoon(slow, longMs + CONFIG.tooSoonFrac * longMs - 1, CONFIG)).toBe(true)
+    expect(isTooSoon(slow, longMs + CONFIG.tooSoonFrac * longMs, CONFIG)).toBe(false)
+    // One short gap is not enough to know the rhythm.
+    const short = createHunt(lockAt({ chirps: [chirpAt(0, -70), chirpAt(10_000, -70)] }), CONFIG, FILTER)
+    expect(isTooSoon(short, 12_000, CONFIG)).toBe(false)
+    expect(isTooSoon(createHunt(lockAt(), CONFIG, FILTER), 5000, CONFIG)).toBe(false)
+  })
+
+  it('"I heard the beep" counts the latest set-aside sound, then takes its shape as the beep\'s', () => {
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    const events = feed(hunt, framesOf(samplesOf(16, [beep(1), clink(14)])))
+    expect(seconds(newReadings(events))).toEqual([1])
+    expect(count(events, 'ignored')).toBe(1)
+    const heard = heardIt(hunt, 16_000, CONFIG)
+    expect(heard.result).toBe('counted')
+    expect(seconds(heard.events.flatMap((e) => (e.type === 'reading' ? [e.reading] : [])))).toEqual([14])
+    expect(huntView(hunt, 16_000, CONFIG).readings.map((r) => Math.round(r.tMs / 1000))).toEqual([1, 14])
+    // The clink is the beep now: the next one is taken.
+    const next = feed(hunt, framesOf(samplesOf(26, [clink(24)])), CONFIG).filter((e) => e.event.type === 'reading')
+    expect(next).toHaveLength(1)
+  }, 30_000)
+
+  it('"I heard the beep" goes by the latest sound: one set aside after a reading is counted', () => {
+    // Beeps every 10 s; the extra beep 4 s after the last one is set aside as too soon. Tapping
+    // right after it counts it, although the reading before it is also within the window.
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    feed(hunt, framesOf(samplesOf(37, [beep(1), beep(11), beep(21), beep(31), beep(35)])))
+    expect(hunt.ignored.map((i) => i.reason)).toEqual(['tooSoon'])
+    const heard = heardIt(hunt, 37_000, CONFIG)
+    expect(heard.result).toBe('counted')
+    expect(huntView(hunt, 37_000, CONFIG).readings.map((r) => Math.round(r.tMs / 1000))).toEqual([1, 11, 21, 31, 35])
+    expect(heardIt(hunt, 37_500, CONFIG).result).toBe('already')
+  }, 30_000)
+
+  it('"I heard the beep" says so when the beep was counted, or when nothing was caught', () => {
+    const hunt = createHunt(lockAt(), CONFIG, FILTER)
+    feed(hunt, framesOf(samplesOf(4, [beep(1)])))
+    expect(heardIt(hunt, 4000, CONFIG)).toEqual({ result: 'already', events: [] })
+    const onset = hunt.readings[0]!.tMs
+    expect(heardIt(hunt, onset + CONFIG.heardItWindowMs - 1, CONFIG).result).toBe('already')
+    expect(heardIt(hunt, onset + CONFIG.heardItWindowMs + 1, CONFIG)).toEqual({ result: 'none', events: [] })
+    expect(heardIt(createHunt(lockAt({ mode: 'live' }), CONFIG, FILTER), 1000, CONFIG).result).toBe('none')
+  }, 30_000)
 })

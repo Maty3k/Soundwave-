@@ -136,7 +136,7 @@ export interface Config {
   readonly f0Alpha: number
   /** After "Not it", frequencies within lockTolPct of the rejected one are ignored for this long. */
   readonly notItExcludeMs: number
-  /** How long listening-phase peaks are kept for a future "I hear it now" button. */
+  /** How long listening-phase peaks are kept for "I heard it" (at least heardItWindowMs). */
   readonly candidateRingMs: number
 
   // ---- Segmenter (hunting) -------------------------------------------------------------------
@@ -197,6 +197,34 @@ export interface Config {
    * since the last one, instead of the chirp countdown, and the clicks stay silent meanwhile.
    */
   readonly longWaitS: number
+
+  // ---- Beep fingerprint, too-soon filter, "I heard it" (src/dsp/shape.ts) -------------------------
+  /** A sound's core: its frames within this many dB of its loudest one. */
+  readonly coreDropDb: number
+  /**
+   * A sound matches the beep when its core lasts at least 1/shapeCoreShorterRatio and at most
+   * shapeCoreLongerRatio times the beep's, give or take shapeCoreSlackMs (a room's echo lengthens a
+   * beep's core, never shortens it) ...
+   */
+  readonly shapeCoreShorterRatio: number
+  readonly shapeCoreLongerRatio: number
+  readonly shapeCoreSlackMs: number
+  /**
+   * ... and fades at most this much faster (dB/s) than the beep. Fading is judged on cores of
+   * shapeMinFadeFrames or more and sounds of shapeMinFadeSnrDb or more (see src/dsp/shape.ts).
+   */
+  readonly shapeFadeTolDbPerS: number
+  readonly shapeMinFadeFrames: number
+  readonly shapeMinFadeSnrDb: number
+  /** The beep's fingerprint: the median shape of its last this many chirps. */
+  readonly fingerprintKeep: number
+  /**
+   * Once the rhythm is known (a confident interval, or a single gap of longWaitS or more), a sound
+   * starting sooner than this fraction of the interval after the last reading is not the beep.
+   */
+  readonly tooSoonFrac: number
+  /** "I heard it" looks this far back (listening: for the beep to lock on; hunting: for an ignored sound). */
+  readonly heardItWindowMs: number
   /** HOLD STILL starts this long (plus 2 x the interval's MAD, for irregular beeps) before the expected chirp ... */
   readonly holdStartS: number
   /** ... and ends at expected + max(2 * MAD, holdEndMinS) + holdEndExtraS if no chirp arrives. */
@@ -363,7 +391,7 @@ export const CONFIG: Config = Object.freeze({
   lockTolMinBins: 3,
   f0Alpha: 0.3,
   notItExcludeMs: 600_000,
-  candidateRingMs: 2500,
+  candidateRingMs: 12_000,
 
   onsetSnrDb: 8,
   onsetFrames: 3,
@@ -392,6 +420,16 @@ export const CONFIG: Config = Object.freeze({
   holdStartS: 5,
   holdEndMinS: 2,
   longWaitS: 60,
+  coreDropDb: 6,
+  shapeCoreShorterRatio: 1.5,
+  shapeCoreLongerRatio: 2,
+  shapeCoreSlackMs: 40,
+  shapeFadeTolDbPerS: 30,
+  shapeMinFadeFrames: 4,
+  shapeMinFadeSnrDb: 30,
+  fingerprintKeep: 5,
+  tooSoonFrac: 0.5,
+  heardItWindowMs: 10_000,
   holdEndExtraS: 2,
   overdueX: 1.5,
   lostX: 3,

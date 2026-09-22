@@ -928,6 +928,20 @@ h1[tabindex='-1']:focus {
   opacity: 0.45;
 }
 
+/* 'I heard the beep' under the status bar, with how many other sounds were set aside. */
+.heard-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: -6px;
+}
+
+.heard-row__note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 /* Status bar under the hero: move (quiet surface) or freeze (filled accent), fixed height. */
 .countdown {
   display: flex;

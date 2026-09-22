@@ -75,6 +75,7 @@ function huntView(n: number): HuntView {
     bandFloorDb: -96,
     snrDb: 1,
     missedChirps: 0,
+    ignoredSounds: 0,
     chirps: [],
   }
 }
