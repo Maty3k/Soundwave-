@@ -121,7 +121,10 @@ export interface Config {
    */
   readonly clearSightingMemoryMs: number
   readonly clearSightingExtraSnrDb: number
-  /** A stable track that stays present this long locks in live mode (continuous tone). */
+  /**
+   * A stable track that stays present this long locks in live mode (continuous tone). Longer than
+   * any beep: a real alarm measured on a phone beeped for up to 2.3 s, and a beep must stay a chirp.
+   */
   readonly sustainedLockMs: number
   /**
    * Chirps that must be heard (at the same frequency, >= slowLockGapMs apart) before locking.
@@ -385,7 +388,7 @@ export const CONFIG: Config = Object.freeze({
   slowLockMemoryMs: 180_000,
   clearSightingMemoryMs: 900_000,
   clearSightingExtraSnrDb: 2,
-  sustainedLockMs: 2000,
+  sustainedLockMs: 4000,
   lockConfirmChirps: 2,
   lockTolPct: 3,
   lockTolMinBins: 3,
