@@ -695,7 +695,7 @@ describe('log copy', () => {
   it('uses the agreed panel strings', () => {
     expect(LOG_COPY.title).toBe('Log')
     expect(LOG_COPY.copy).toBe('Copy log')
-    expect(LOG_COPY.notePlaceholder).toBe('Where were you? e.g. hallway door')
+    expect(LOG_COPY.notePlaceholder).toBe('Where were you?')
     expect(LOG_COPY.empty).toBe(
       'Each chirp adds a line here. Add a note about where you stood, so you can retrace the warm spots.',
     )

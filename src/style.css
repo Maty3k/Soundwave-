@@ -391,22 +391,23 @@ h1[tabindex='-1']:focus {
 
 /* ---- Landing ----------------------------------------------------------------------------------- */
 
+/* Brand, lead, the three steps (one card), privacy, Start listening, the station row, then a 'More' list. */
 .landing {
   justify-content: center;
-  gap: 16px;
-  padding-block: 4px;
+  gap: 12px;
+  padding-block: 0;
 }
 
 .brand {
   display: grid;
   justify-items: start;
-  gap: 4px;
+  gap: 2px;
 }
 
 .sonar {
-  width: 48px;
-  height: 48px;
-  margin-bottom: 6px;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
   color: var(--heat-1);
 }
 
@@ -415,7 +416,7 @@ h1[tabindex='-1']:focus {
 }
 
 .brand-title {
-  font-size: clamp(40px, 11vw, 60px);
+  font-size: clamp(36px, 10vw, 56px);
   font-weight: 800;
   line-height: 1.05;
   letter-spacing: -0.02em;
@@ -423,40 +424,53 @@ h1[tabindex='-1']:focus {
 
 .tagline {
   color: var(--accent);
-  font-size: clamp(20px, 5.5vw, 26px);
+  font-size: clamp(18px, 5vw, 24px);
   font-weight: 700;
 }
 
 .lead {
-  font-size: 1.0625rem;
+  font-size: 1rem;
 }
 
+/* One card, a hairline between its rows. */
 .steps {
   display: grid;
-  gap: 10px;
   padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
   list-style: none;
 }
 
-.steps li {
+.step {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: var(--surface);
+  min-height: 44px;
+  padding: 7px 12px;
+}
+
+.step + .step {
+  border-top: 1px solid var(--line);
 }
 
 .step-n {
   flex: none;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: var(--surface-2);
   color: var(--accent);
+  font-size: 0.875rem;
   font-weight: 800;
+}
+
+.step-text {
+  min-width: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
 }
 
 .privacy {
@@ -464,7 +478,7 @@ h1[tabindex='-1']:focus {
   align-items: flex-start;
   gap: 10px;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }
 
 .icon {
@@ -485,21 +499,56 @@ h1[tabindex='-1']:focus {
   text-align: center;
 }
 
-/* Secondary way in: this device becomes a listening station for another phone's hunt. */
-.station-cta {
-  display: grid;
-  gap: 6px;
-  margin-top: 6px;
-}
-
+/*
+ * Secondary way in: this device becomes a listening station for another phone's hunt. One row
+ * button: icon, label, and the hint as a second muted line inside it.
+ */
 .station-btn {
+  justify-content: flex-start;
+  gap: 12px;
   width: 100%;
+  min-height: 56px;
+  padding: 8px 14px;
+  text-align: left;
 }
 
 .station-btn .icon {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   margin-top: 0;
+  color: var(--heat-2);
+}
+
+.station-btn__text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.station-btn__hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 450;
+  line-height: 1.3;
+}
+
+/* 'More' list under the actions: Listening range and Past hunts as two 48 px rows, one border above. */
+.more {
+  display: grid;
+  width: 100%;
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--line);
+}
+
+.more > .band,
+.more > .past-hunts {
+  padding-top: 0;
+}
+
+/* The list's own border is the line above; Past hunts keeps its hairline as the line between the rows (hidden, it takes it along). */
+.more > .band {
+  border-top: 0;
 }
 
 /* ---- Requesting -------------------------------------------------------------------------------- */
@@ -545,7 +594,7 @@ h1[tabindex='-1']:focus {
 
 .hint {
   max-width: 28em;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
@@ -664,7 +713,7 @@ h1[tabindex='-1']:focus {
 }
 
 .no-beep {
-  padding: 10px 12px;
+  padding: 12px 14px;
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
@@ -678,7 +727,7 @@ h1[tabindex='-1']:focus {
   width: min(100%, 420px);
   padding: 14px;
   border: 1px solid rgba(255, 138, 31, 0.45);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   text-align: left;
 }
@@ -769,16 +818,17 @@ h1[tabindex='-1']:focus {
  */
 
 .hunting {
-  gap: 14px;
+  gap: 10px;
 }
 
-/* Top bar: frequency, mode, Clicks, Vibrate. Never wraps (about 313 px of 328 at 360 px wide). */
+/* Top bar, 44 px: frequency, mode, then the Clicks and Vibrate icons. Never wraps (about 280 px of 328 at 360 px wide). */
 .topbar {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  min-height: 44px;
 }
 
 .topbar-spacer {
@@ -809,59 +859,77 @@ h1[tabindex='-1']:focus {
   color: var(--accent);
 }
 
+/*
+ * Icon toggles (Clicks, Vibrate): a 44 px square, the icon above a small On / Off word. On: accent
+ * colour, filled icon body and a tinted surface. Off: muted outline with a slash across the icon.
+ */
 .toggle {
   display: inline-flex;
   flex: none;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  min-width: 64px;
-  min-height: 48px;
-  padding: 4px 10px;
+  gap: 1px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  font-size: 0.85rem;
-  font-weight: 650;
-  line-height: 1.1;
-  transition: background-color 0.15s, border-color 0.15s;
+  color: var(--muted);
+  line-height: 1;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
 
-/* ON / OFF is the one state cue that does not rely on colour: make it readable. */
+.toggle-icon {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.toggle-icon__off {
+  display: none;
+}
+
+.toggle[aria-pressed='false'] .toggle-icon__off {
+  display: block;
+}
+
+/* The one state cue that does not rely on colour, besides the slash. */
 .toggle-state {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .toggle[aria-pressed='true'] {
   border-color: rgba(255, 138, 31, 0.6);
   background: rgba(255, 138, 31, 0.12);
+  color: var(--accent);
+}
+
+.toggle[aria-pressed='true'] .toggle-icon__body {
+  fill: currentColor;
 }
 
 .toggle[aria-pressed='true'] .toggle-state {
   color: var(--accent);
 }
 
-.toggle[aria-pressed='false'] .toggle-label {
-  color: var(--muted);
-}
-
 /* Hero: the verdict word is the biggest, steadiest thing on screen and never wraps. */
 .hero {
   display: grid;
-  gap: 6px;
+  gap: 2px;
   min-width: 0;
-  padding-top: 4px;
   transition: opacity 0.25s;
 }
 
+/* 14vw keeps WARMER and COLDER (about 6.2 em at this weight) inside the column at 360 and 320 px. */
 .verdict {
   color: var(--text);
-  font-size: clamp(48px, 16vw, 104px);
+  font-size: clamp(44px, 14vw, 104px);
   font-weight: 850;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -904,7 +972,7 @@ h1[tabindex='-1']:focus {
   min-width: 0;
   min-height: 1.5em;
   color: var(--muted);
-  font-size: 1.125rem;
+  font-size: 1.0625rem;
   white-space: nowrap;
 }
 
@@ -928,18 +996,30 @@ h1[tabindex='-1']:focus {
   opacity: 0.45;
 }
 
-/* 'I heard the beep' under the status bar, with how many other sounds were set aside. */
+/*
+ * 'I heard the beep' under the status bar: a compact bordered button with how many other sounds
+ * were set aside beside it (under it when the line is too narrow).
+ */
 .heard-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 12px;
-  margin-top: -6px;
+  margin-top: -2px;
+}
+
+.heard-row__btn {
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 0.95rem;
 }
 
 .heard-row__note {
+  flex: 1 1 10em;
+  min-width: 0;
   color: var(--muted);
   font-size: 0.9rem;
+  line-height: 1.3;
 }
 
 /* Status bar under the hero: move (quiet surface) or freeze (filled accent), fixed height. */
@@ -948,11 +1028,11 @@ h1[tabindex='-1']:focus {
   flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
-  min-height: 60px;
-  padding: 8px 14px;
+  min-height: 52px;
+  padding: 6px 14px;
   border-radius: var(--radius-sm);
   background: var(--surface);
-  font-size: 1.125rem;
+  font-size: 1.0625rem;
   font-weight: 650;
   line-height: 1.2;
   transition: background-color 0.2s;
@@ -980,7 +1060,7 @@ h1[tabindex='-1']:focus {
 .countdown[data-kind='hold'] .countdown-text,
 .countdown[data-kind='late'] .countdown-text {
   color: var(--accent-ink);
-  font-size: 1.375rem;
+  font-size: 1.25rem;
   font-weight: 800;
 }
 
@@ -1374,7 +1454,7 @@ h1[tabindex='-1']:focus {
  */
 .found {
   justify-content: center;
-  gap: 16px;
+  gap: 14px;
 }
 
 .found-hero {
@@ -1565,7 +1645,7 @@ h1[tabindex='-1']:focus {
 
 .found-actions {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
 }
 
@@ -1590,7 +1670,7 @@ h1[tabindex='-1']:focus {
   display: grid;
   grid-auto-columns: minmax(0, 1fr);
   grid-auto-flow: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 /* The way back sits beside its reason, so it reads as the exception, not a third choice. */
@@ -1598,7 +1678,7 @@ h1[tabindex='-1']:focus {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .found-keep__hint {
@@ -2063,28 +2143,17 @@ h1[tabindex='-1']:focus {
     width: min(40vw, 150px);
   }
 
-  .steps {
-    gap: 6px;
-  }
-
-  .steps li {
-    padding: 6px 12px;
-  }
-
-  .lead {
-    font-size: 1rem;
+  .step {
+    min-height: 40px;
+    padding: 5px 12px;
   }
 
   .privacy {
-    font-size: 0.9rem;
-  }
-
-  .station-cta {
-    margin-top: 0;
+    font-size: 0.875rem;
   }
 
   .hunting {
-    gap: 10px;
+    gap: 8px;
   }
 }
 
@@ -2099,12 +2168,6 @@ h1[tabindex='-1']:focus {
 
   .chip {
     padding-inline: 8px;
-  }
-
-  .toggle {
-    min-width: 56px;
-    padding-inline: 6px;
-    font-size: 0.8rem;
   }
 
   .tab {
@@ -2219,8 +2282,14 @@ h1[tabindex='-1']:focus {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .steps li {
+  /* Three rows become three columns: the hairline moves to their left side. */
+  .step {
     padding: 8px 10px;
+  }
+
+  .step + .step {
+    border-top: 0;
+    border-left: 1px solid var(--line);
   }
 
   /* Locked: Start hunting and 'Wrong sound?' side by side, both on screen. */
@@ -2273,12 +2342,8 @@ h1[tabindex='-1']:focus {
     grid-column: 1 / -1;
   }
 
-  .station-cta {
-    grid-area: 1 / 2 / 3;
-    margin-top: 0;
-  }
-
   .station-btn {
+    grid-area: 1 / 2 / 3;
     min-height: 64px;
   }
 
@@ -2323,6 +2388,11 @@ h1[tabindex='-1']:focus {
 
   .hunting .tabs {
     grid-area: tabs;
+  }
+
+  /* No area of its own: it lands in the spare left cell under the tabs and must not stretch into it. */
+  .hunting .heard-row {
+    align-self: start;
   }
 
   .hunting .panels {
@@ -2525,7 +2595,7 @@ h1[tabindex='-1']:focus {
 }
 
 .log__empty {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border: 1px dashed var(--line);
   border-radius: var(--radius-sm);
   color: var(--muted);
@@ -2536,7 +2606,7 @@ h1[tabindex='-1']:focus {
 .log__list {
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 5px;
   max-height: min(640px, max(240px, calc(100vh - 420px)));
   max-height: min(640px, max(240px, calc(100dvh - 420px)));
   margin: 0;
@@ -2548,11 +2618,12 @@ h1[tabindex='-1']:focus {
   scrollbar-width: thin;
 }
 
+/* One reading: its line (time, verdict, details) and a slim note field under it. */
 .log-row {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  padding: 8px 12px 10px;
+  padding: 6px 8px 7px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -2564,7 +2635,7 @@ h1[tabindex='-1']:focus {
     grid-template-columns: minmax(0, 1fr) minmax(240px, 50%);
     align-items: center;
     gap: 12px;
-    padding: 6px 6px 6px 12px;
+    padding: 5px 5px 5px 10px;
   }
 }
 
@@ -2578,20 +2649,21 @@ h1[tabindex='-1']:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 10px;
+  gap: 2px 8px;
   min-width: 0;
+  padding-inline: 2px;
 }
 
 .log-row__time {
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.875rem;
   font-variant-numeric: tabular-nums;
 }
 
 /* Same colours as the hero verdict, always next to the verdict word itself. */
 .log-row__verdict {
   color: var(--text);
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 800;
   letter-spacing: 0.01em;
 }
@@ -2626,7 +2698,7 @@ h1[tabindex='-1']:focus {
 .log-row__details {
   min-width: 0;
   color: var(--text);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -2651,6 +2723,12 @@ h1[tabindex='-1']:focus {
   font: inherit;
   font-size: 1rem; /* at least 16 px, so mobile browsers do not zoom into the field */
   line-height: 1.3;
+}
+
+/* The log's field is slimmer than the found screen's but still a 44 px target; its text stays 16 px. */
+.log-row__note {
+  min-height: 44px;
+  padding: 8px 10px;
 }
 
 .log-row__note::placeholder,
@@ -2679,7 +2757,7 @@ h1[tabindex='-1']:focus {
   }
 
   .log-row {
-    padding: 6px 10px 8px;
+    padding: 5px 8px 6px;
   }
 }
 
@@ -3617,16 +3695,20 @@ h1[tabindex='-1']:focus {
 }
 
 .past-hunts__title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 1.05rem;
   font-weight: 700;
 }
 
+/* Right-aligned, the same pill as the Listening range's band. */
 .past-hunts__count {
-  min-width: 26px;
-  padding: 1px 8px;
+  flex: none;
+  min-width: 28px;
+  padding: 1px 10px;
   border-radius: 999px;
   background: var(--surface-2);
-  color: var(--muted);
+  color: var(--text);
   font-size: 0.85rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;

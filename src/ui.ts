@@ -242,10 +242,15 @@ interface Toggle {
   readonly state: HTMLElement
 }
 
-/** On/off button: aria-pressed carries the state, the visible On/Off word repeats it without colour. */
-function toggle(label: string, onClick: () => void): Toggle {
+/**
+ * Icon on/off button (Clicks, Vibrate): a 44 px square with the icon and a small On / Off word
+ * under it. aria-pressed carries the state and aria-label the name, so a screen reader says
+ * 'Clicks, toggle button, pressed'; the word and the slash across the icon when off repeat the
+ * state without colour.
+ */
+function toggle(label: string, icon: SVGSVGElement, onClick: () => void): Toggle {
   const state = h('span', { class: 'toggle-state', 'aria-hidden': 'true' })
-  const el = h('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false' }, h('span', { class: 'toggle-label' }, label), state)
+  const el = h('button', { type: 'button', class: 'toggle', 'aria-pressed': 'false', 'aria-label': label, title: label }, icon, state)
   el.addEventListener('click', onClick)
   return { el, state }
 }
@@ -327,6 +332,37 @@ function batteryIcon(): SVGSVGElement {
     s('rect', { x: '2.5', y: '7', width: '16', height: '10', rx: '2.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' }),
     s('path', { d: 'M21 10.5v3', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round' }),
     s('rect', { x: '5.5', y: '10', width: '6', height: '4', rx: '1', fill: 'currentColor' }),
+  )
+}
+
+/** Speaker with two sound waves: the Clicks toggle. The body fills when on; a slash crosses it when off. */
+function clicksIcon(): SVGSVGElement {
+  return s(
+    'svg',
+    { class: 'toggle-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    s(
+      'g',
+      { fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' },
+      s('path', { class: 'toggle-icon__body', d: 'M4 9.5h3.5L12 5.5v13l-4.5-4H4z' }),
+      s('path', { d: 'M15.5 9.5a3.6 3.6 0 0 1 0 5' }),
+      s('path', { d: 'M18.5 7a7.2 7.2 0 0 1 0 10' }),
+      s('path', { class: 'toggle-icon__off', d: 'M4 20L20 4' }),
+    ),
+  )
+}
+
+/** A phone with tremor marks on both sides: the Vibrate toggle. Same on / off treatment as clicksIcon. */
+function hapticsIcon(): SVGSVGElement {
+  return s(
+    'svg',
+    { class: 'toggle-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    s(
+      'g',
+      { fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' },
+      s('rect', { class: 'toggle-icon__body', x: '8', y: '3.5', width: '8', height: '17', rx: '2' }),
+      s('path', { d: 'M4.5 8.5v7M1.5 10.5v3M19.5 8.5v7M22.5 10.5v3' }),
+      s('path', { class: 'toggle-icon__off', d: 'M4 20L20 4' }),
+    ),
   )
 }
 
@@ -424,17 +460,21 @@ function landingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
   const supported = caps.secureContext && caps.getUserMedia && caps.audioContext
   let cta: HTMLElement
   if (supported) {
-    const station = button(L.station, () => handlers.onStationMode(), 'secondary')
-    station.prepend(stationIcon())
-    station.classList.add('station-btn')
-    station.setAttribute('aria-describedby', 'station-hint')
-    cta = h(
-      'div',
-      { class: 'cta' },
-      button(L.start, () => handlers.onStart(), 'primary'),
-      h('p', { class: 'caption' }, L.caption),
-      h('div', { class: 'station-cta' }, station, h('p', { class: 'caption', id: 'station-hint' }, L.stationHint)),
+    // One row button: the phone icon, the label and, as a second muted line, what a station is for.
+    // The label alone names the button (aria-labelledby); the hint describes it.
+    const station = h(
+      'button',
+      { type: 'button', class: 'btn btn-secondary station-btn', 'aria-labelledby': 'station-label', 'aria-describedby': 'station-hint' },
+      stationIcon(),
+      h(
+        'span',
+        { class: 'station-btn__text' },
+        h('span', { class: 'station-btn__label', id: 'station-label' }, L.station),
+        h('span', { class: 'station-btn__hint', id: 'station-hint' }, L.stationHint),
+      ),
     )
+    station.addEventListener('click', () => handlers.onStationMode())
+    cta = h('div', { class: 'cta' }, button(L.start, () => handlers.onStart(), 'primary'), h('p', { class: 'caption' }, L.caption), station)
   } else {
     cta = h('div', { class: 'cta' }, errorCard('unsupported', handlers, 'h2', ['back']).el) // Back has nowhere to go here
   }
@@ -442,13 +482,14 @@ function landingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
     'landing',
     h('header', { class: 'brand' }, sonarMark(), title, h('p', { class: 'tagline' }, COPY.tagline)),
     h('p', { class: 'lead' }, L.lead),
+    // The three steps: one card, a hairline between its rows.
     h(
       'ol',
       { class: 'steps' },
       ...L.steps.map((step, i) =>
         h(
           'li',
-          {},
+          { class: 'step' },
           h('span', { class: 'step-n', 'aria-hidden': 'true' }, String(i + 1)),
           h('span', { class: 'step-text' }, h('strong', {}, `${step.title}:`), ` ${step.text}`),
         ),
@@ -457,10 +498,10 @@ function landingView(state: AppState, handlers: UiHandlers, cfg: Config): Screen
     h('p', { class: 'privacy' }, lockIcon(), h('span', {}, L.privacy)),
     cta,
   )
-  // Below the call to action: the Listening range (collapsed), then the past hunts.
+  // Below the call to action, one 'More' list: the Listening range (collapsed), then the past hunts.
   const band = createBandControl(handlers, cfg)
   const history = createHistoryPanel(handlers, title)
-  el.append(band.el, history.el)
+  el.append(h('div', { class: 'more' }, band.el, history.el))
   return {
     el,
     focus: title,
@@ -739,8 +780,8 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
   const freqValue = h('span', { class: 'num' })
   const modeValue = h('span')
   const modeChip = h('span', { class: 'chip chip-mode' }, h('span', { class: 'sr-only' }, `${H.modeLabel}: `), modeValue)
-  const clicks = toggle(H.clicks, () => handlers.onToggleClicks())
-  const haptics = state.caps.haptics ? toggle(H.haptics, () => handlers.onToggleHaptics()) : null
+  const clicks = toggle(H.clicks, clicksIcon(), () => handlers.onToggleClicks())
+  const haptics = state.caps.haptics ? toggle(H.haptics, hapticsIcon(), () => handlers.onToggleHaptics()) : null
   const topbar = h(
     'div',
     { class: 'topbar' },
@@ -768,7 +809,9 @@ function huntingView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: 
   const statusBar = h('div', { class: 'countdown', 'data-kind': 'none' }, hearing, statusText)
   // Chirp mode: tell the app a beep was just heard (counts one the filters set aside).
   const heardNote = h('p', { class: 'heard-row__note', hidden: true })
-  const heardRow = h('div', { class: 'heard-row' }, button(H.heardIt, () => handlers.onHeardIt(), 'quiet'), heardNote)
+  const heardBtn = button(H.heardIt, () => handlers.onHeardIt(), 'secondary')
+  heardBtn.classList.add('heard-row__btn')
+  const heardRow = h('div', { class: 'heard-row' }, heardBtn, heardNote)
   const phaseLive = h('p', { class: 'sr-only', 'aria-live': 'polite' })
 
   // ---- Meter panel: meter (with Start over here), history strip, guidance.

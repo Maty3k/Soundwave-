@@ -735,7 +735,7 @@ export const LOG_COPY = {
   copy: 'Copy log',
   empty: 'Each chirp adds a line here. Add a note about where you stood, so you can retrace the warm spots.',
   listLabel: 'Readings, newest first',
-  notePlaceholder: 'Where were you? e.g. hallway door',
+  notePlaceholder: 'Where were you?',
   /** Marker of a reading that clipped the microphone ... */
   clipped: 'VERY HOT / clipped',
   /** ... shortened when the verdict word next to it already says VERY HOT. */
