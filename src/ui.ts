@@ -70,6 +70,7 @@ import type {
   Verdict,
 } from './types.ts'
 import { createRadarPanel } from './radarUi.ts'
+import { createBandControl } from './ui/bandControl.ts'
 import { createHistoryPanel } from './ui/historyPanel.ts'
 import { createLogPanel } from './ui/logPanel.ts'
 import { createStationsPanel } from './ui/stationsPanel.ts'
@@ -117,6 +118,12 @@ export interface UiHandlers {
   onCopyLink(): void
   onToggleClicks(): void
   onToggleHaptics(): void
+  /**
+   * Start and listening screens: the person set the Listening range (src/ui/bandControl.ts), the
+   * lowest and highest pitch in Hz that can be taken as the beep. Already a valid band; sent
+   * debounced while dragging and once more when the thumb is let go.
+   */
+  onBand(lo: number, hi: number): void
   /**
    * A hunting tab was chosen (click, or arrow keys on the tab row). Runs inside the event, so main
    * can open the compass here when entering 'direction' (iOS only asks during a gesture) and close
@@ -410,7 +417,7 @@ interface ScreenView {
   dispose?(): void
 }
 
-function landingView(state: AppState, handlers: UiHandlers): ScreenView {
+function landingView(state: AppState, handlers: UiHandlers, cfg: Config): ScreenView {
   const L = COPY.landing
   const title = heading(COPY.appName, 'screen-title brand-title')
   const caps = state.caps
@@ -450,14 +457,18 @@ function landingView(state: AppState, handlers: UiHandlers): ScreenView {
     h('p', { class: 'privacy' }, lockIcon(), h('span', {}, L.privacy)),
     cta,
   )
+  // Below the call to action: the Listening range (collapsed), then the past hunts.
+  const band = createBandControl(handlers, cfg)
   const history = createHistoryPanel(handlers, title)
-  el.append(history.el)
+  el.append(band.el, history.el)
   return {
     el,
     focus: title,
     update(s) {
+      band.update(s)
       history.update(s)
     },
+    dispose: () => band.dispose(),
   }
 }
 
@@ -497,6 +508,8 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
   )
   const noBeep = h('p', { class: 'no-beep', hidden: true }, T.noBeep)
   const rawBadge = badge()
+  // The Listening range can be narrowed while waiting for the beep (collapsed by default).
+  const band = createBandControl(handlers, cfg)
 
   // A beep heard once, waiting for the confirming chirp. The sightings line ticks every second,
   // so the card is not a live region; a separate polite node speaks the main line once.
@@ -541,6 +554,7 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
         pendingLive,
         h('div', { 'aria-live': 'polite' }, noBeep),
         rawBadge.el,
+        band.el,
       ),
     ),
     h(
@@ -577,7 +591,9 @@ function listeningView(handlers: UiHandlers, cfg: Config): ScreenView {
         announce(pendingLive, pending === null ? '' : pendingText(pending))
       }
       syncBadge(rawBadge, state.mic)
+      band.update(state)
     },
+    dispose: () => band.dispose(),
   }
 }
 
@@ -1295,7 +1311,7 @@ function buildView(state: AppState, handlers: UiHandlers, cfg: Config, hooks: Hu
   const screen = state.screen
   switch (screen.kind) {
     case 'idle':
-      return landingView(state, handlers)
+      return landingView(state, handlers, cfg)
     case 'requesting':
       return requestingView(handlers, cfg)
     case 'listening':

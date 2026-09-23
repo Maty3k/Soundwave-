@@ -23,7 +23,7 @@ import type {
 // ---- Hand-built fixtures -------------------------------------------------------------------------
 
 const CAPS: Capabilities = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: true, haptics: false, compass: true }
-const SETTINGS: Settings = { clicks: true, haptics: true }
+const SETTINGS: Settings = { clicks: true, haptics: true, bandHz: CONFIG.searchBandHz }
 const T0 = 1_000
 const NOW = 50_000
 
@@ -276,7 +276,9 @@ const TABLE: readonly Row[] = [
   { name: 'toast replaces a visible toast', from: on(S.idle, { toast: { text: 'old', untilMs: T1 + 1 } }), event: { type: 'toast', text: 'new', nowMs: T1 },
     expect: { nowMs: T1, toast: { text: 'new', untilMs: T1 + 2_000 + 55 * 3 } } },
   { name: 'settings patch is merged', from: on(S.hunting), event: { type: 'settings', patch: { clicks: false } },
-    expect: { settings: { clicks: false, haptics: true } } },
+    expect: { settings: { clicks: false, haptics: true, bandHz: CONFIG.searchBandHz } } },
+  { name: 'settings patch with a Listening range is merged', from: on(S.listening), event: { type: 'settings', patch: { bandHz: [8000, 12_000] } },
+    expect: { settings: { clicks: true, haptics: true, bandHz: [8000, 12_000] } } },
   { name: 'wakeLockFailed sets the flag', from: on(S.hunting), event: { type: 'wakeLockFailed' },
     expect: { wakeLockFailed: true } },
 
@@ -386,7 +388,7 @@ describe('reduce: transition table', () => {
 
   it('keeps settings, caps, debug, toast and wakeLockFailed across a stop', () => {
     const toast = { text: 'hi', untilMs: NOW + 100 }
-    const from = on(S.listening, { debug: true, toast, wakeLockFailed: true, settings: { clicks: false, haptics: true } })
+    const from = on(S.listening, { debug: true, toast, wakeLockFailed: true, settings: { clicks: false, haptics: true, bandHz: [8000, 12_000] } })
     const next = reduce(from, { type: 'stopRequest' }, CONFIG)
     expect(next.settings).toBe(from.settings)
     expect(next.caps).toBe(from.caps)
@@ -820,16 +822,68 @@ describe('reduce: station mode', () => {
 describe('reduce: settings', () => {
   it('merges both toggles at once', () => {
     const next = reduce(on(S.hunting), { type: 'settings', patch: { clicks: false, haptics: false } }, CONFIG)
-    expect(next.settings).toEqual({ clicks: false, haptics: false })
+    expect(next.settings).toEqual({ clicks: false, haptics: false, bandHz: SETTINGS.bandHz })
   })
 
   it('never wipes a setting with a key that is present but undefined (untyped callers)', () => {
-    const patch = { clicks: undefined, haptics: false } as unknown as Partial<Settings>
+    const patch = { clicks: undefined, haptics: false, bandHz: undefined } as unknown as Partial<Settings>
     const next = reduce(on(S.hunting), { type: 'settings', patch }, CONFIG)
-    expect(next.settings).toEqual({ clicks: SETTINGS.clicks, haptics: false })
+    expect(next.settings).toEqual({ clicks: SETTINGS.clicks, haptics: false, bandHz: SETTINGS.bandHz })
     const onlyUndefined = on(S.hunting)
     expect(reduce(onlyUndefined, { type: 'settings', patch: { clicks: undefined } as unknown as Partial<Settings> }, CONFIG))
       .toBe(onlyUndefined)
+  })
+
+  it('merges a Listening range, rounded to the step, together with a toggle', () => {
+    const next = reduce(on(S.listening), { type: 'settings', patch: { bandHz: [8049, 11_951], haptics: false } }, CONFIG)
+    expect(next.settings).toEqual({ clicks: true, haptics: false, bandHz: [8000, 12_000] })
+    // Rounding follows the config the reducer is given.
+    const coarse = reduce(on(S.listening), { type: 'settings', patch: { bandHz: [8049, 11_951] } }, withConfig({ bandStepHz: 1000 }))
+    expect(coarse.settings.bandHz).toEqual([8000, 12_000])
+    const fine = reduce(on(S.listening), { type: 'settings', patch: { bandHz: [8049, 11_951] } }, withConfig({ bandStepHz: 1 }))
+    expect(fine.settings.bandHz).toEqual([8049, 11_951])
+  })
+
+  it('clamps a Listening range into the slider limits', () => {
+    const next = reduce(on(S.idle), { type: 'settings', patch: { bandHz: [100, 30_000] } }, CONFIG)
+    expect(next.settings.bandHz).toEqual(CONFIG.bandLimitsHz)
+  })
+
+  it('ignores a Listening range that is not a valid band and keeps the other fields of the patch', () => {
+    const s = on(S.listening, { settings: { ...SETTINGS, bandHz: [8000, 12_000] } })
+    const bad: unknown[] = [
+      [3000, 3000 + CONFIG.bandMinSpanHz - CONFIG.bandStepHz],
+      [9000, 2000],
+      [Number.NaN, 9000],
+      [3000, Number.POSITIVE_INFINITY],
+      [3000],
+      [3000, 9000, 12_000],
+      '3000-9000',
+      { lo: 3000, hi: 9000 },
+      null,
+      ['3000', 'x'],
+      // Numbers only: nothing is coerced (Number(null) would be 0, Number('3000') 3000).
+      ['3000', '9000'],
+      [3000, '9000'],
+      [null, 9000],
+      [true, 9000],
+    ]
+    for (const bandHz of bad) {
+      const patch = { bandHz } as unknown as Partial<Settings>
+      expect(reduce(s, { type: 'settings', patch }, CONFIG), JSON.stringify(bandHz)).toBe(s)
+      const withToggle = reduce(s, { type: 'settings', patch: { ...patch, clicks: false } }, CONFIG)
+      expect(withToggle.settings).toEqual({ clicks: false, haptics: true, bandHz: [8000, 12_000] })
+    }
+  })
+
+  it('is a no-op for the Listening range already set, even as a new tuple', () => {
+    const s = on(S.listening, { settings: { ...SETTINGS, bandHz: [8000, 12_000] } })
+    expect(reduce(s, { type: 'settings', patch: { bandHz: [8000, 12_000] } }, CONFIG)).toBe(s)
+    expect(reduce(s, { type: 'settings', patch: { bandHz: [8040, 11_960] } }, CONFIG)).toBe(s)
+    // A changed band keeps the toggles.
+    const next = reduce(s, { type: 'settings', patch: { bandHz: [3000, 4000] } }, CONFIG)
+    expect(next.settings).toEqual({ clicks: true, haptics: true, bandHz: [3000, 4000] })
+    expect(next.screen).toBe(s.screen)
   })
 })
 

@@ -260,7 +260,7 @@ function roundSym(x: number): number {
 }
 
 /** Integer with a comma every three digits, independent of the runtime locale. */
-function groupThousands(n: number): string {
+export function groupThousands(n: number): string {
   const digits = String(Math.abs(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
   return n < 0 ? MINUS + digits : digits
 }
@@ -668,7 +668,7 @@ function chirpRow(c: Chirp): string {
 
 /**
  * Plain-text diagnostics for the ?debug panel, one fact per line: mic diag (device label, track and
- * context sample rates, EC/NS/AGC), lock, f0, current level / band floor / SNR (dB), warmth,
+ * context sample rates, EC/NS/AGC), the Listening range, lock, f0, current level / band floor / SNR (dB), warmth,
  * holdActive, missed chirps, and a table of the last chirps (dB, SNR dB, duration ms, clipped, tainted %).
  */
 export function debugText(state: AppState): string {
@@ -687,6 +687,7 @@ export function debugText(state: AppState): string {
     )
   }
   lines.push(`mic lvl  ${num(state.micLevel, 2)}`)
+  lines.push(`band     ${bandText(state.settings.bandHz[0], state.settings.bandHz[1])}`)
   const lock = state.lock
   if (lock !== null) {
     lines.push(`lock     ${num(lock.f0Hz)} Hz, ${lock.mode}, ${lock.reason}, SNR ${num(lock.snrDb)} dB`)
@@ -1218,3 +1219,29 @@ export function ignoredSoundsText(n: number): string {
   if (k === 0) return ''
   return k === 1 ? 'Ignored 1 other sound at this pitch' : `Ignored ${groupThousands(k)} other sounds at this pitch`
 }
+
+// ---- Listening range ------------------------------------------------------------------------------
+
+/** A pitch as a plain grouped number: 3120.4 -> '3,120'; a non-finite value reads as NO_VALUE. */
+function hzNumber(hz: number): string {
+  return Number.isFinite(hz) ? groupThousands(roundSym(hz)) : NO_VALUE
+}
+
+/** The Listening range as its pill and readouts show it: '1,500–12,000 Hz' (en dash, no spaces). */
+export function bandText(lo: number, hi: number): string {
+  return `${hzNumber(lo)}–${hzNumber(hi)} Hz`
+}
+
+/** Static strings of the Listening range control (start and listening screens, src/ui/bandControl.ts). */
+export const BAND_COPY = {
+  title: 'Listening range',
+  low: 'Lowest pitch',
+  high: 'Highest pitch',
+  hint:
+    'Only sounds between these pitches can be taken as the beep. Smoke and CO alarms chirp near ' +
+    '3,000 Hz; small electronic buzzers are often far higher. Narrow the range to shut out voices, TVs and clattering.',
+  /** What a screen reader hears for the collapsed control: 'Listens between 1,500 and 12,000 Hz'. */
+  summary: (lo: number, hi: number): string => `Listens between ${hzNumber(lo)} and ${hzNumber(hi)} Hz`,
+  /** The link that puts the default band back: 'Reset to 1,500–12,000 Hz'. */
+  reset: (lo: number, hi: number): string => `Reset to ${bandText(lo, hi)}`,
+} as const

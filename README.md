@@ -9,6 +9,9 @@ Everything runs in your browser, and after the first visit it also works offline
 ## How to use it
 
 1. Tap **Start listening** and allow the microphone.
+
+   **Listening range.** Under the buttons on the start screen, and again on the listening screen, a collapsed **Listening range** control holds two sliders for the lowest and highest pitch that can be taken as the beep. By default Soundwave listens between 1,500 and 12,000 Hz. Smoke and CO alarms chirp near 3,000 Hz; small electronic buzzers are often far higher. If random sounds keep getting picked up while you wait, narrow the range around the pitch you expect: nothing outside it can be detected, and a beep already heard at another pitch is dropped. The setting is kept on the device; **Reset** puts the default back.
+
 2. Wait for the beep. Soundwave listens until it has heard the same chirp twice, so it does not lock onto a random sound; a continuous tone locks after about 4 seconds. It remembers a clear first chirp for 15 minutes (a faint one for 3), so an alarm that beeps only every few minutes still locks on its second beep. If you are sure after the first chirp, tap **Use it now**, or tap **I heard it** within 10 seconds of hearing the beep: Soundwave looks back over those seconds and locks onto the clearest steady tone it caught. It then shows the frequency it locked onto, for example 3,120 Hz. Tap **Wrong sound? Listen again** if that was not it.
 3. Soundwave learns the beep's fingerprint (how long it lasts, and that it holds its level) from the beeps it locked onto, and only counts sounds at that pitch that match it: a clinking glass, a knock or a voice that happens to hit the same note is set aside, and so is a sound that comes far too soon for the beep's rhythm. The screen shows how many were set aside. If a real beep was set aside (muffled behind a door, say), tap **I heard the beep** within 10 seconds and it is counted, and its shape becomes the fingerprint.
 4. The bar under the verdict tells you what to do: **Move now** between chirps, **Hold still…** just before the next one. When the beeps are minutes apart and irregular, it says **Stay here until the next beep** instead, with the time since the last one, and the clicks pause meanwhile: move to a new spot right after a beep, then wait there. Each chirp gives a verdict, **WARMER**, **COLDER** or **SAME**, with the change in dB and a meter relative to your best reading so far.
@@ -109,7 +112,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 
 - Chirps shorter than about 40 ms are spectrally wide and may need several chirps to lock; 20 ms chirps do not lock (recorded as a known failing test).
 - The meter is relative to your best reading so far, so a high percentage means "loudest yet", not "close".
-- Soundwave listens for beeps between 1,500 and 12,000 Hz. A very faint beep does not count while listening, so that microphone noise is not taken for one; above 6,000 Hz a beep has to stand out a little more still. If nothing shows after a beep you could hear, move closer and wait for the next one.
+- Soundwave listens for beeps between 1,500 and 12,000 Hz unless you change the **Listening range** (500 to 16,000 Hz at the widest, at least 500 Hz wide). A very faint beep does not count while listening, so that microphone noise is not taken for one; above 6,000 Hz a beep has to stand out a little more still. If nothing shows after a beep you could hear, move closer and wait for the next one.
 - Scanning a pairing QR code needs a camera. Chrome on Android, macOS and ChromeOS use their built-in QR detector; other browsers load a small bundled decoder (qr by Paul Miller) the first time they scan. Without a camera, use Copy code or Share and paste the code on the other device.
 - Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
 - Pairing across different networks depends on both networks allowing a direct connection. There is no relay server, so some mobile carriers and strict firewalls block it; use the same Wi-Fi or a phone hotspot instead.
@@ -117,6 +120,8 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 ### Tuning
 
 Every threshold lives in `src/config.ts` and every user-facing string in `src/copy.ts`. The signal-processing thresholds were calibrated against two hours of synthetic noise through a reference copy of the browser's analyser (`src/dsp/synth.ts`). Field tuning with a real detector should change only those two files; the unit tests import their thresholds from the config.
+
+The one threshold the person can change in the app is the search band: the **Listening range** control writes `Settings.bandHz` (kept in `localStorage` with the click and vibration toggles), and while listening the detector runs with `searchBandHz` replaced by it. Its limits, minimum width and slider step are `bandLimitsHz`, `bandMinSpanHz` and `bandStepHz` in `src/config.ts`; the hunt itself always uses the locked frequency and is not affected.
 
 ## Project layout
 
@@ -129,12 +134,13 @@ src/
   copy.ts          all user-facing text
   ui.ts, style.css DOM rendering and styles
   platform.ts      capabilities, wake lock, haptics, settings storage
+  band.ts          the Listening range: rounding, clamping and the minimum width of the search band
   history.ts       past hunts, saved on this device (localStorage)
   hub.ts           stations and extra microphones on the main device (pairing, comparison)
   stationMode.ts   this device as a listening station
   extraMics.ts     extra microphones on the same device
   net/             pairing codes, QR codes, messages and clock sync between devices
-  ui/              log panel, stations panel, station screen, past hunts
+  ui/              log panel, stations panel, station screen, past hunts, Listening range sliders
   orientation.ts   compass heading for the direction scan
   radarUi.ts       direction-scan radar panel
   audio/           microphone, analyser loop, Geiger clicker (browser code)

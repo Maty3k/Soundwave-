@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { initialState } from './app.ts'
 import { CONFIG } from './config.ts'
+import { BAND_COPY, bandText, groupThousands } from './copy.ts'
 import {
   COPY,
   countdownText,
@@ -517,7 +518,7 @@ describe('static copy', () => {
 
 describe('debugText', () => {
   const caps = { secureContext: true, getUserMedia: true, audioContext: true, wakeLock: false, haptics: false, compass: false }
-  const BLANK = initialState(caps, { clicks: true, haptics: false }, true, 0)
+  const BLANK = initialState(caps, { clicks: true, haptics: false, bandHz: CONFIG.searchBandHz }, true, 0)
 
   it('lists the mic diagnostics, measurements and last chirps', () => {
     const mic: MicDiag = {
@@ -539,6 +540,12 @@ describe('debugText', () => {
 
   it('says when the mic has not started', () => {
     expect(debugText(BLANK)).toContain('not started')
+  })
+
+  it('shows the Listening range', () => {
+    expect(debugText(BLANK)).toContain('band     1,500–12,000 Hz')
+    const narrowed = { ...BLANK, settings: { ...BLANK.settings, bandHz: [8000, 12_000] as const } }
+    expect(debugText(narrowed)).toContain('band     8,000–12,000 Hz')
   })
 })
 
@@ -1004,5 +1011,47 @@ describe('Past hunts text', () => {
     expect(HISTORY_COPY.nameHint).toBe('Saved on this device under Past hunts.')
     expect(HISTORY_COPY.intro).toBe('Beeps you found, saved on this device only.')
     expect(HISTORY_COPY.removed).toBe('Removed from past hunts.')
+  })
+})
+
+// ---- Listening range -----------------------------------------------------------------------------
+
+describe('Listening range text', () => {
+  it('groups thousands', () => {
+    expect(groupThousands(0)).toBe('0')
+    expect(groupThousands(999)).toBe('999')
+    expect(groupThousands(1500)).toBe('1,500')
+    expect(groupThousands(12_000)).toBe('12,000')
+    expect(groupThousands(1_234_567)).toBe('1,234,567')
+    expect(groupThousands(-1500)).toBe(`${MINUS}1,500`)
+  })
+
+  it('writes the band with an en dash and one unit', () => {
+    expect(bandText(1500, 12_000)).toBe('1,500–12,000 Hz')
+    expect(bandText(8000, 12_000)).toBe('8,000–12,000 Hz')
+    expect(bandText(500, 16_000)).toBe('500–16,000 Hz')
+    expect(bandText(1499.6, 12_000.4)).toBe('1,500–12,000 Hz')
+    expect(bandText(Number.NaN, 12_000)).toBe(`${NO_VALUE}–12,000 Hz`)
+  })
+
+  it('has the agreed wording', () => {
+    expect(BAND_COPY.title).toBe('Listening range')
+    expect(BAND_COPY.low).toBe('Lowest pitch')
+    expect(BAND_COPY.high).toBe('Highest pitch')
+    expect(BAND_COPY.hint).toBe(
+      'Only sounds between these pitches can be taken as the beep. Smoke and CO alarms chirp near 3,000 Hz; ' +
+        'small electronic buzzers are often far higher. Narrow the range to shut out voices, TVs and clattering.',
+    )
+    expect(BAND_COPY.summary(1500, 12_000)).toBe('Listens between 1,500 and 12,000 Hz')
+    expect(BAND_COPY.summary(8000, 9500)).toBe('Listens between 8,000 and 9,500 Hz')
+    expect(BAND_COPY.reset(1500, 12_000)).toBe('Reset to 1,500–12,000 Hz')
+    expect(BAND_COPY.reset(CONFIG.searchBandHz[0], CONFIG.searchBandHz[1])).toBe('Reset to 1,500–12,000 Hz')
+  })
+
+  it('uses ASCII apostrophes and no double spaces', () => {
+    for (const text of [BAND_COPY.title, BAND_COPY.low, BAND_COPY.high, BAND_COPY.hint, BAND_COPY.summary(1, 2), BAND_COPY.reset(1, 2)]) {
+      expect(text).not.toMatch(/[‘’]/)
+      expect(text).not.toMatch(/ {2}/)
+    }
   })
 })

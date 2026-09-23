@@ -3723,8 +3723,198 @@ h1[tabindex='-1']:focus {
   overflow-wrap: anywhere;
 }
 
+
+/* ---- Listening range (src/ui/bandControl.ts): start and listening screens ------------------- */
+
+.band {
+  width: 100%;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+
+.band__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  touch-action: manipulation;
+}
+
+.band__summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The same chevron as Past hunts: it turns when the control opens. */
+.band__summary::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 4px 3px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.band__details[open] > .band__summary::before {
+  margin-bottom: 6px;
+  transform: rotate(45deg);
+}
+
+.band__summary:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.band__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.band__pill {
+  flex: none;
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.band__body {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 4px;
+  /* Scrolled into view on the listening screen, it clears the sticky bottom bar. */
+  scroll-margin-bottom: 96px;
+}
+
+.band__hint {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* Label and readout on one line, the slider under them across the full width. */
+.band__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px; /* the row gap keeps the slider's focus ring off the label's descenders */
+}
+
+.band__label {
+  min-width: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.band__value {
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* An accent-coloured range input with a 28 px thumb inside a 48 px tall hit area. */
+.band__slider {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 48px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.band__slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.band__slider::-webkit-slider-thumb {
+  width: 28px;
+  height: 28px;
+  margin-top: -11px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.band__slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.band__slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.band__slider::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.band__slider:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 0;
+}
+
+/* Link-styled, like .stations-link. */
+.band__reset {
+  justify-self: start;
+  min-height: 48px;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.band__reset:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .band__reset:hover {
+    color: var(--accent-hover);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .past-hunts__summary::before {
+  .past-hunts__summary::before,
+  .band__summary::before {
     transition: none;
   }
 

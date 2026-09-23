@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { CONFIG, withConfig } from '../config.ts'
 import type { Config } from '../config.ts'
 import type { Frame, Lock, Peak, PendingBeep } from '../types.ts'
-import { createDetector, detectStep, findPeaks, lockFromPending, lockFromRecent, pendingBeep, recentPeaks, slowLockSnrAt } from './detect.ts'
+import { createDetector, detectStep, findPeaks, inBand, lockFromPending, lockFromRecent, pendingBeep, recentPeaks, slowLockSnrAt } from './detect.ts'
 import { createHunt, huntView } from './hunt.ts'
 import type { DetectorOptions, DetectorState } from './detect.ts'
 import {
@@ -1060,6 +1060,137 @@ describe('detectStep: tracker rules', () => {
 })
 
 // ---- Pending beep and "Use it now" on hand-made spectra ----------------------------------------
+
+// ---- The search band narrowed while listening (the Listening range setting) ----------------------
+
+describe('search band narrowed while listening', () => {
+  const SLOW = (CONFIG.slowLockSnrDb + CONFIG.fastLockSnrDb) / 2
+  const STRONG = CONFIG.fastLockSnrDb + 5
+  const at = (bin: number, snrDb = SLOW) => (): Line[] => [{ bin, snrDb }]
+  /**
+   * Bin 300 (3,516 Hz) lies below this band, bin 305 (3,574 Hz) inside it; the two are within lock
+   * tolerance of each other, so with the default band they confirm each other (see the slow lock
+   * tests).
+   */
+  const NARROW: readonly [number, number] = [3550, 12_000]
+  const narrow = withConfig({ searchBandHz: NARROW })
+  const narrowFast = withConfig({ searchBandHz: NARROW, lockConfirmChirps: 1 })
+  const tol = lockToleranceBins(300 * BW, BW, CONFIG.lockTolPct, CONFIG.lockTolMinBins)
+
+  it('the fixture is as described', () => {
+    expect(Math.ceil(NARROW[0] / BW)).toBe(303)
+    expect(5).toBeLessThanOrEqual(tol)
+    expect(inBand(300 * BW, BW, narrow)).toBe(false)
+    expect(inBand(305 * BW, BW, narrow)).toBe(true)
+  })
+
+  it('inBand allows one bin of slack at each edge', () => {
+    const [lo, hi] = CONFIG.searchBandHz
+    expect(inBand(lo, BW, CONFIG)).toBe(true)
+    expect(inBand(hi, BW, CONFIG)).toBe(true)
+    expect(inBand(lo - BW, BW, CONFIG)).toBe(true)
+    expect(inBand(hi + BW, BW, CONFIG)).toBe(true)
+    expect(inBand(lo - BW - 0.01, BW, CONFIG)).toBe(false)
+    expect(inBand(hi + BW + 0.01, BW, CONFIG)).toBe(false)
+    // Without a usable bin width there is no slack.
+    expect(inBand(lo - 0.01, 0, CONFIG)).toBe(false)
+    expect(inBand(lo - 0.01, Number.NaN, CONFIG)).toBe(false)
+    expect(inBand(lo, Number.NaN, CONFIG)).toBe(true)
+  })
+
+  it('every peak findPeaks reports lies in the band it searched', () => {
+    const frames = sceneFrames({ durationS: 0.4, seed: 21, tones: [chirp(3520, 30, 0, 400), chirp(3600, 30, 0, 400)] })
+    for (const f of frames) {
+      for (const p of findPeaks(f.db, f.binHz, narrow)) expect(inBand(p.f0Hz, f.binHz, narrow)).toBe(true)
+      expect(findPeaks(f.db, f.binHz, narrow).some((p) => Math.abs(p.f0Hz - 3600) < 2)).toBe(true)
+      expect(findPeaks(f.db, f.binHz, narrow).some((p) => Math.abs(p.f0Hz - 3520) < 2)).toBe(false)
+    }
+  })
+
+  it('a remembered sighting outside the narrowed band is no longer shown as pending or usable', () => {
+    const det = createDetector(CONFIG)
+    for (const f of handRun(0, 5, at(300))) expect(detectStep(det, f, CONFIG)).toBeNull()
+    expect(pendingBeep(det, 500, CONFIG)?.sightings).toBe(1)
+    expect(pendingBeep(det, 500, narrow)).toBeNull()
+    expect(lockFromPending(det, 500, narrow)).toBeNull()
+    // Widening it again brings the sighting back: the memory itself is kept.
+    expect(pendingBeep(det, 500, CONFIG)?.sightings).toBe(1)
+    expect(lockFromPending(det, 500, CONFIG)?.reason).toBe('manual')
+  })
+
+  it('a remembered sighting outside the narrowed band cannot confirm a new one', () => {
+    const first = handRun(0, 5, at(300))
+    const second = handRun(5000, 5, at(305))
+    // Control: with the default band the pair locks.
+    const control = createDetector(CONFIG)
+    for (const f of first) expect(detectStep(control, f, CONFIG)).toBeNull()
+    const locks = second.map((f) => detectStep(control, f, CONFIG)).filter((l) => l !== null)
+    expect(locks).toHaveLength(1)
+    expect(locks[0]!.reason).toBe('slow')
+
+    const det = createDetector(CONFIG)
+    for (const f of first) expect(detectStep(det, f, CONFIG)).toBeNull()
+    for (const f of second) expect(detectStep(det, f, narrow)).toBeNull()
+    // Only the new sighting shows, and it waits for its own confirmation.
+    const beep = pendingBeep(det, 5200, narrow)!
+    expect(beep.sightings).toBe(1)
+    expect(beep.f0Hz).toBeCloseTo(305 * BW, 3)
+    const lock = lockFromPending(det, 5200, narrow)!
+    expect(lock.chirps).toHaveLength(1)
+    expect(lock.chirps[0]!.f0Hz).toBeCloseTo(305 * BW, 3)
+  })
+
+  it('a sighting that closes outside the band, after the band was narrowed, neither locks nor pairs', () => {
+    // Fast lock: the track opens under the default band and closes (3 quiet frames) under the narrowed one.
+    const hits = handRun(0, 5, at(300, STRONG), 0)
+    const quiet = handRun(5 * HOP, 0, at(300))
+    const fast = createDetector(FAST)
+    for (const f of hits) expect(detectStep(fast, f, FAST)).toBeNull()
+    for (const f of quiet) expect(detectStep(fast, f, narrowFast)).toBeNull()
+    expect(fast.memory).toHaveLength(0)
+    expect(pendingBeep(fast, 500, narrowFast)).toBeNull()
+    // Control: closing under the default band locks at once.
+    const control = createDetector(FAST)
+    for (const f of hits) expect(detectStep(control, f, FAST)).toBeNull()
+    expect(quiet.map((f) => detectStep(control, f, FAST)).filter((l) => l !== null)[0]?.reason).toBe('fast')
+
+    // Slow lock: a remembered sighting at the same pitch waits; the closing one is out of band.
+    const det = createDetector(CONFIG)
+    for (const f of handRun(0, 5, at(300))) expect(detectStep(det, f, CONFIG)).toBeNull()
+    for (const f of handRun(5000, 5, at(300), 0)) expect(detectStep(det, f, CONFIG)).toBeNull()
+    for (const f of handRun(5000 + 5 * HOP, 0, at(300))) expect(detectStep(det, f, narrow)).toBeNull()
+    expect(det.memory).toHaveLength(1)
+    expect(pendingBeep(det, 5200, narrow)).toBeNull()
+    expect(pendingBeep(det, 5200, CONFIG)?.sightings).toBe(1)
+  })
+
+  it('"I heard it" (lockFromRecent) skips the frames whose strongest peak lies outside the band', () => {
+    // Heard under the default band, asked for under the narrowed one: nothing, and it keeps listening.
+    const det = createDetector(CONFIG)
+    for (const f of handRun(0, 8, at(300, STRONG))) expect(detectStep(det, f, CONFIG)).toBeNull()
+    expect(lockFromRecent(det, 1000, CONFIG.heardItWindowMs, narrow)).toBeNull()
+    expect(det.done).toBe(false)
+    // Control: under the default band the same frames lock.
+    const lock = lockFromRecent(det, 1000, CONFIG.heardItWindowMs, CONFIG)!
+    expect(lock.reason).toBe('manual')
+    expect(lock.f0Hz).toBeCloseTo(300 * BW, 3)
+    // A sound inside the narrowed band is found as before, even next to a louder one outside it.
+    const inside = createDetector(CONFIG)
+    const both = (i: number): Line[] => (i % 2 === 0 ? [{ bin: 300, snrDb: STRONG + 5 }, { bin: 305, snrDb: STRONG }] : [{ bin: 305, snrDb: STRONG }])
+    for (const f of handRun(0, 8, both)) expect(detectStep(inside, f, CONFIG)).toBeNull()
+    expect(lockFromRecent(inside, 1000, CONFIG.heardItWindowMs, narrow)!.f0Hz).toBeCloseTo(305 * BW, 3)
+  })
+
+  it('nothing changes for sightings inside the band', () => {
+    const det = createDetector(CONFIG)
+    for (const f of handRun(0, 5, at(305))) expect(detectStep(det, f, narrow)).toBeNull()
+    expect(pendingBeep(det, 500, narrow)?.sightings).toBe(1)
+    const locks = handRun(5000, 5, at(305)).map((f) => detectStep(det, f, narrow)).filter((l) => l !== null)
+    expect(locks).toHaveLength(1)
+    expect(locks[0]!.reason).toBe('slow')
+    expect(locks[0]!.f0Hz).toBeCloseTo(305 * BW, 3)
+  })
+})
 
 describe('pendingBeep and lockFromPending', () => {
   const SLOW = (CONFIG.slowLockSnrDb + CONFIG.fastLockSnrDb) / 2

@@ -9,6 +9,7 @@
  * clock (performance.now() in the app); events that carry nowMs also advance state.nowMs.
  */
 import type { Config } from './config.ts'
+import { normalizeBand, sameBand } from './band.ts'
 import type {
   AppEvent,
   AppState,
@@ -148,6 +149,20 @@ function truncate(text: string, max: number): string {
   if (text.length <= n) return text
   const code = n > 0 ? text.charCodeAt(n - 1) : 0
   return text.slice(0, code >= 0xd800 && code <= 0xdbff ? n - 1 : n)
+}
+
+/**
+ * The Listening range a settings patch asks for, when it is a pair of numbers that makes a valid
+ * band (normalizeBand; a string, null or boolean is not coerced); the current band otherwise, and
+ * also when it asks for the band already set (same reference, so the reducer can tell that nothing
+ * changed).
+ */
+function patchedBand(raw: unknown, current: readonly [number, number], cfg: Config): readonly [number, number] {
+  if (!Array.isArray(raw) || raw.length !== 2) return current
+  const [lo, hi] = raw as [unknown, unknown]
+  if (typeof lo !== 'number' || typeof hi !== 'number') return current
+  const band = normalizeBand(lo, hi, cfg)
+  return band === null || sameBand(band, current) ? current : band
 }
 
 /**
@@ -334,12 +349,15 @@ export function reduce(state: AppState, event: AppEvent, cfg: Config): AppState 
       }
 
     case 'settings': {
-      // Only boolean fields are merged: a key present with the value undefined (possible from
-      // untyped callers despite exactOptionalPropertyTypes) must not wipe a setting.
-      const clicks = typeof event.patch.clicks === 'boolean' ? event.patch.clicks : state.settings.clicks
-      const haptics = typeof event.patch.haptics === 'boolean' ? event.patch.haptics : state.settings.haptics
-      if (clicks === state.settings.clicks && haptics === state.settings.haptics) return state
-      return { ...state, settings: { ...state.settings, clicks, haptics } }
+      // A toggle is merged only when it is a boolean and the Listening range only when it is a
+      // valid band: a key present with the value undefined (possible from untyped callers despite
+      // exactOptionalPropertyTypes) or a broken band must not wipe a setting.
+      const cur = state.settings
+      const clicks = typeof event.patch.clicks === 'boolean' ? event.patch.clicks : cur.clicks
+      const haptics = typeof event.patch.haptics === 'boolean' ? event.patch.haptics : cur.haptics
+      const bandHz = patchedBand(event.patch.bandHz, cur.bandHz, cfg)
+      if (clicks === cur.clicks && haptics === cur.haptics && bandHz === cur.bandHz) return state
+      return { ...state, settings: { clicks, haptics, bandHz } }
     }
 
     case 'wakeLockFailed':

@@ -15,6 +15,11 @@
  * most the slow-lock rules express), values below 2 act as 1, and NaN acts as the default 2.
  * While it waits, pendingBeep tells the UI what has been heard so far, and lockFromPending ("Use it
  * now") locks on that without waiting for the confirmation.
+ * The search band (config.searchBandHz) can change between frames when the person narrows the
+ * Listening range: sightings outside the current band (inBand), remembered or just closed, are
+ * then neither shown as pending nor locked on or paired into a lock, and "I heard it" skips the
+ * frames whose strongest peak lies outside it (a continuous tone outside it simply gets no more
+ * candidates, so it cannot lock as sustained either).
  * Pure and deterministic; no DOM or Web Audio.
  */
 import type { Config } from '../config.ts'
@@ -293,9 +298,11 @@ export function lockFromPending(state: DetectorState, nowMs: number, cfg: Config
  * trackMatchBins of a sound's mean bin, with at most trackCloseMissFrames frames missing in
  * between, form that sound. One that spans persistFrames frames and persistSpanMs, holds its pitch
  * (robust spread below maxFreqStdBins) and is not within lock tolerance of an excluded frequency
- * counts; the one with the highest per-bin SNR wins (the latest on a tie). Returns a manual Lock on
- * it (mode 'live', without chirps, when it lasted longer than maxChirpMs) and finishes the
- * detector, or null, leaving the detector listening, when the window holds no such sound.
+ * counts; the one with the highest per-bin SNR wins (the latest on a tie). A frame whose strongest
+ * peak lies outside the current search band (inBand: it was found before the Listening range was
+ * narrowed) counts as silent. Returns a manual Lock on it (mode 'live', without chirps, when it
+ * lasted longer than maxChirpMs) and finishes the detector, or null, leaving the detector
+ * listening, when the window holds no such sound.
  */
 export function lockFromRecent(state: DetectorState, nowMs: number, windowMs: number, cfg: Config): Lock | null {
   if (state.done) return null
@@ -326,7 +333,7 @@ export function lockFromRecent(state: DetectorState, nowMs: number, windowMs: nu
       return false
     })
     const p = state.ringPeaks[idx]
-    if (p == null || !(p.binF > 0)) continue
+    if (p == null || !(p.binF > 0) || !inBand(p.f0Hz, p.f0Hz / p.binF, cfg)) continue
     let match: Heard | null = null
     for (const h of open) {
       const d = Math.abs(p.binF - h.meanBin)
@@ -550,6 +557,17 @@ function confirmChirps(cfg: Config): 1 | 2 {
 }
 
 /**
+ * f0Hz lies within cfg.searchBandHz, give or take one bin (binHz): findPeaks searches whole bins,
+ * so an interpolated peak at the edge of the band can sit up to half a bin outside it and must
+ * still count. Sightings at other pitches are ignored, so that a band narrowed while listening
+ * also shuts out what was heard before.
+ */
+export function inBand(f0Hz: number, binHz: number, cfg: Config): boolean {
+  const slack = Number.isFinite(binHz) && binHz > 0 ? binHz : 0
+  return f0Hz >= cfg.searchBandHz[0] - slack && f0Hz <= cfg.searchBandHz[1] + slack
+}
+
+/**
  * Best per-bin SNR a sighting at f0Hz needs to be remembered, shown as a pending beep and paired
  * into a slow lock: slowLockSnrDb, plus highBandExtraSnrDb from highBandFromHz up.
  */
@@ -560,7 +578,8 @@ export function slowLockSnrAt(f0Hz: number, cfg: Config): number {
 /**
  * Fast lock first (lockConfirmChirps 1 only), then slow lock; remembers slow-lock-worthy sightings
  * that found no partner. A slow lock pairs with the qualifying remembered sighting that started
- * most recently.
+ * most recently. Sightings outside the current search band (inBand) neither lock nor pair: a
+ * track that was open when the band was narrowed still closes as a sighting.
  */
 function lockFromSightings(state: DetectorState, sightings: readonly Sighting[], nowMs: number, cfg: Config): Lock | null {
   const memory = state.memory
@@ -570,6 +589,7 @@ function lockFromSightings(state: DetectorState, sightings: readonly Sighting[],
   if (confirmChirps(cfg) === 1) {
     let fast: Sighting | null = null
     for (const s of sightings) {
+      if (!sightingInBand(s, cfg)) continue
       if (s.maxSnrDb >= cfg.fastLockSnrDb && (fast === null || s.maxSnrDb > fast.maxSnrDb)) fast = s
     }
     if (fast !== null) {
@@ -578,10 +598,12 @@ function lockFromSightings(state: DetectorState, sightings: readonly Sighting[],
   }
 
   for (const s of sightings) {
-    if (s.maxSnrDb < slowLockSnrAt(s.chirp.f0Hz, cfg)) continue
+    if (!sightingInBand(s, cfg) || s.maxSnrDb < slowLockSnrAt(s.chirp.f0Hz, cfg)) continue
     const tol = lockToleranceBins(s.chirp.f0Hz, s.binHz, cfg.lockTolPct, cfg.lockTolMinBins)
     let partner: Sighting | null = null
     for (const e of memory) {
+      // A sighting outside the band (heard before it was narrowed) cannot confirm a beep.
+      if (!sightingInBand(e, cfg)) continue
       const gapMs = s.chirp.tOnsetMs - e.chirp.tOnsetMs
       const apart = gapMs >= cfg.slowLockGapMs
       const near = Math.abs(s.chirp.f0Hz - e.chirp.f0Hz) / s.binHz <= tol
@@ -612,6 +634,7 @@ function pendingGroup(state: DetectorState, nowMs: number, cfg: Config): Sightin
   if (state.done) return []
   const usable = state.memory.filter(
     (s) =>
+      sightingInBand(s, cfg) &&
       s.maxSnrDb >= slowLockSnrAt(s.chirp.f0Hz, cfg) &&
       nowMs - s.chirp.tOnsetMs <= sightingMemoryMs(s, cfg) &&
       !isExcluded(s.chirp.f0Hz / s.binHz, s.binHz, state.excludeHz, cfg),
@@ -665,6 +688,11 @@ function summarise(group: readonly Sighting[]): PendingBeep {
 /** Field-by-field equality of two pending beeps. */
 function samePending(a: PendingBeep, b: PendingBeep): boolean {
   return a.f0Hz === b.f0Hz && a.snrDb === b.snrDb && a.heardAtMs === b.heardAtMs && a.sightings === b.sightings
+}
+
+/** The sighting's frequency lies within the current search band (inBand, with its own bin width as slack). */
+function sightingInBand(s: Sighting, cfg: Config): boolean {
+  return inBand(s.chirp.f0Hz, s.binHz, cfg)
 }
 
 type SightingLike = { readonly chirp: { readonly f0Hz: number }; readonly maxSnrDb: number }

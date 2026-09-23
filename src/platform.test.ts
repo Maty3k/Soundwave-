@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CONFIG } from './config.ts'
+import { CONFIG, withConfig } from './config.ts'
+import { normalizeBand } from './band.ts'
 import {
   createAudioContext,
   DEFAULT_SETTINGS,
@@ -53,9 +54,13 @@ describe('readQueryFlags', () => {
 })
 
 describe('parseSettings', () => {
+  /** The default Listening range: the search band. */
+  const BAND = CONFIG.searchBandHz
+
   it('returns the defaults for nothing stored', () => {
     expect(parseSettings(null)).toEqual(DEFAULT_SETTINGS)
-    expect(DEFAULT_SETTINGS).toEqual({ clicks: true, haptics: true })
+    expect(DEFAULT_SETTINGS).toEqual({ clicks: true, haptics: true, bandHz: [1500, 12_000] })
+    expect(DEFAULT_SETTINGS.bandHz).toEqual(BAND)
   })
 
   it('returns the defaults for garbage', () => {
@@ -65,26 +70,98 @@ describe('parseSettings', () => {
   })
 
   it('reads stored booleans', () => {
-    expect(parseSettings('{"clicks":false,"haptics":false}')).toEqual({ clicks: false, haptics: false })
-    expect(parseSettings('{"clicks":true,"haptics":false}')).toEqual({ clicks: true, haptics: false })
+    expect(parseSettings('{"clicks":false,"haptics":false}')).toEqual({ clicks: false, haptics: false, bandHz: BAND })
+    expect(parseSettings('{"clicks":true,"haptics":false}')).toEqual({ clicks: true, haptics: false, bandHz: BAND })
   })
 
   it('falls back per field for missing or non-boolean values', () => {
-    expect(parseSettings('{"clicks":false}')).toEqual({ clicks: false, haptics: true })
+    expect(parseSettings('{"clicks":false}')).toEqual({ clicks: false, haptics: true, bandHz: BAND })
     expect(parseSettings('{"clicks":"no","haptics":0}')).toEqual(DEFAULT_SETTINGS)
-    expect(parseSettings('{"clicks":null,"haptics":false}')).toEqual({ clicks: true, haptics: false })
+    expect(parseSettings('{"clicks":null,"haptics":false}')).toEqual({ clicks: true, haptics: false, bandHz: BAND })
   })
 
   it('drops unknown fields', () => {
-    expect(parseSettings('{"clicks":false,"haptics":true,"volume":3}')).toStrictEqual({ clicks: false, haptics: true })
+    expect(parseSettings('{"clicks":false,"haptics":true,"volume":3}')).toStrictEqual({ clicks: false, haptics: true, bandHz: BAND })
+  })
+
+  it('reads a stored Listening range', () => {
+    expect(parseSettings('{"clicks":true,"haptics":true,"bandHz":[8000,12000]}')).toEqual({ clicks: true, haptics: true, bandHz: [8000, 12_000] })
+    expect(parseSettings('{"bandHz":[500,16000]}')).toEqual({ ...DEFAULT_SETTINGS, bandHz: [500, 16_000] })
+    // Exactly the minimum span is fine.
+    expect(parseSettings('{"bandHz":[3000,3500]}').bandHz).toEqual([3000, 3500])
+  })
+
+  it('rounds a stored Listening range to the slider step, like the reducer and the sliders do', () => {
+    expect(parseSettings('{"bandHz":[9730,10730]}').bandHz).toEqual([9700, 10_700])
+    expect(parseSettings('{"bandHz":[1549,12049]}').bandHz).toEqual([1500, 12_000])
+    expect(parseSettings('{"bandHz":[1999.6,9000.4]}').bandHz).toEqual([2000, 9000])
+    expect(parseSettings('{"bandHz":[499.6,16000.4]}').bandHz).toEqual([500, 16_000])
+    // Rounding lands on the limit: fine.
+    expect(parseSettings('{"bandHz":[499.4,9000]}').bandHz).toEqual([500, 9000])
+    // What is stored ends up in the state exactly as the reducer would store it.
+    for (const [lo, hi] of [[9730, 10_730], [1549, 12_049], [3001, 3549], [500.4, 15_999.6]] as const) {
+      expect(parseSettings(JSON.stringify({ bandHz: [lo, hi] })).bandHz).toEqual(normalizeBand(lo, hi, CONFIG))
+    }
+    // The step comes from the config; a step of 0 means no rounding.
+    expect(parseSettings('{"bandHz":[9730,10730]}', withConfig({ bandStepHz: 1000 })).bandHz).toEqual([10_000, 11_000])
+    expect(parseSettings('{"bandHz":[9730,10730]}', withConfig({ bandStepHz: 0 })).bandHz).toEqual([9730, 10_730])
+  })
+
+  it('falls back to the default Listening range for a missing or broken one, keeping the other fields', () => {
+    const broken = [
+      '{"clicks":false}',
+      '{"clicks":false,"bandHz":null}',
+      '{"clicks":false,"bandHz":"1500-12000"}',
+      '{"clicks":false,"bandHz":{"lo":1500,"hi":12000}}',
+      '{"clicks":false,"bandHz":[]}',
+      '{"clicks":false,"bandHz":[3000]}',
+      '{"clicks":false,"bandHz":[3000,9000,12000]}',
+      '{"clicks":false,"bandHz":["3000",9000]}',
+      '{"clicks":false,"bandHz":["3000","9000"]}',
+      '{"clicks":false,"bandHz":[3000,null]}',
+      '{"clicks":false,"bandHz":[null,9000]}',
+      '{"clicks":false,"bandHz":[3000,true]}',
+      // JSON.parse reads 1e999 as Infinity.
+      '{"clicks":false,"bandHz":[3000,1e999]}',
+      '{"clicks":false,"bandHz":[-1e999,9000]}',
+    ]
+    for (const raw of broken) expect(parseSettings(raw), raw).toEqual({ clicks: false, haptics: true, bandHz: BAND })
+  })
+
+  it('falls back to the default Listening range for one that is too narrow, reversed or out of range', () => {
+    const [min, max] = CONFIG.bandLimitsHz
+    const span = CONFIG.bandMinSpanHz
+    const step = CONFIG.bandStepHz
+    const bad: (readonly [number, number])[] = [
+      [3000, 3000 + span - step],
+      [3000, 3000 + span - step / 2 - 1],
+      [3000, 3000],
+      [9000, 2000],
+      [min - step, 9000],
+      [min - step / 2 - 1, 9000],
+      [3000, max + step],
+      [3000, max + step / 2 + 1],
+      [0, 20_000],
+      [-3000, 3000],
+    ]
+    for (const band of bad) {
+      expect(parseSettings(JSON.stringify({ bandHz: band })).bandHz, JSON.stringify(band)).toEqual(BAND)
+    }
+  })
+
+  it('checks the Listening range against the config it is given', () => {
+    const cfg = withConfig({ bandLimitsHz: [1000, 5000], bandMinSpanHz: 1000 })
+    expect(parseSettings('{"bandHz":[2000,4000]}', cfg).bandHz).toEqual([2000, 4000])
+    expect(parseSettings('{"bandHz":[2000,2500]}', cfg).bandHz).toEqual(BAND)
+    expect(parseSettings('{"bandHz":[8000,12000]}', cfg).bandHz).toEqual(BAND)
   })
 
   it('round-trips its own JSON', () => {
     for (const s of [
-      { clicks: true, haptics: true },
-      { clicks: false, haptics: true },
-      { clicks: true, haptics: false },
-      { clicks: false, haptics: false },
+      { clicks: true, haptics: true, bandHz: [1500, 12_000] },
+      { clicks: false, haptics: true, bandHz: [1500, 12_000] },
+      { clicks: true, haptics: false, bandHz: [8000, 12_000] },
+      { clicks: false, haptics: false, bandHz: [500, 16_000] },
     ]) {
       expect(parseSettings(JSON.stringify(s))).toEqual(s)
     }
@@ -263,15 +340,17 @@ describe('loadSettings / saveSettings', () => {
       setItem: (k: string, v: string) => void store.set(k, v),
     })
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
-    saveSettings({ clicks: false, haptics: true })
-    expect(JSON.parse(store.get(SETTINGS_KEY)!)).toEqual({ clicks: false, haptics: true })
-    expect(loadSettings()).toEqual({ clicks: false, haptics: true })
+    saveSettings({ clicks: false, haptics: true, bandHz: [8000, 12_000] })
+    expect(JSON.parse(store.get(SETTINGS_KEY)!)).toEqual({ clicks: false, haptics: true, bandHz: [8000, 12_000] })
+    expect(loadSettings()).toEqual({ clicks: false, haptics: true, bandHz: [8000, 12_000] })
+    saveSettings(DEFAULT_SETTINGS)
+    expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
   })
 
   it('falls back to the defaults and never throws when storage is missing or blocked', () => {
     vi.stubGlobal('localStorage', undefined)
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
-    expect(() => saveSettings({ clicks: false, haptics: false })).not.toThrow()
+    expect(() => saveSettings({ clicks: false, haptics: false, bandHz: [1500, 12_000] })).not.toThrow()
     vi.stubGlobal('localStorage', {
       getItem: () => {
         throw new DOMException('blocked', 'SecurityError')
@@ -281,7 +360,7 @@ describe('loadSettings / saveSettings', () => {
       },
     })
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS)
-    expect(() => saveSettings({ clicks: false, haptics: false })).not.toThrow()
+    expect(() => saveSettings({ clicks: false, haptics: false, bandHz: [1500, 12_000] })).not.toThrow()
   })
 })
 

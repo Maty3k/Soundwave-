@@ -450,6 +450,12 @@ export interface Capabilities {
 export interface Settings {
   readonly clicks: boolean
   readonly haptics: boolean
+  /**
+   * The pitch range searched while listening (Hz, lowest and highest): only sounds between them
+   * can be taken as the beep. Default CONFIG.searchBandHz; the sliders keep it within
+   * CONFIG.bandLimitsHz, at least bandMinSpanHz wide and on bandStepHz steps (src/band.ts).
+   */
+  readonly bandHz: readonly [number, number]
 }
 
 // ---- App state machine -------------------------------------------------------------------------

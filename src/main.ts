@@ -13,7 +13,8 @@
  * in the same click.
  */
 import './style.css'
-import { CONFIG } from './config.ts'
+import { CONFIG, withConfig, type Config } from './config.ts'
+import { sameBand } from './band.ts'
 import type {
   AppState,
   ErrorCode,
@@ -29,6 +30,7 @@ import type {
   MicDiag,
   PendingBeep,
   Reading,
+  Settings,
 } from './types.ts'
 import { createStore, initialState } from './app.ts'
 import { mountUi } from './ui.ts'
@@ -124,6 +126,29 @@ window.addEventListener('storage', (e) => {
 
 const haptics = new Haptics(CONFIG)
 haptics.setEnabled(store.get().settings.haptics && caps.haptics)
+
+// ---- Detector config: CONFIG with the person's Listening range ---------------------------------
+
+/** The band detectCfgCache was built for, and the copy of CONFIG that searches it. */
+let detectCfgBand: readonly [number, number] = CONFIG.searchBandHz
+let detectCfgCache: Config = CONFIG
+
+/**
+ * CONFIG with searchBandHz replaced by the Listening range setting (Settings.bandHz), for every
+ * detector call: a sound outside the range is never found. Recomputed only when the band changes;
+ * CONFIG itself while the band is the default. The hunt keeps CONFIG: it follows one locked
+ * frequency and does not search.
+ */
+function detectCfg(): Config {
+  const band = store.get().settings.bandHz
+  if (band !== detectCfgBand) {
+    if (!sameBand(band, detectCfgBand)) {
+      detectCfgCache = sameBand(band, CONFIG.searchBandHz) ? CONFIG : withConfig({ searchBandHz: band })
+    }
+    detectCfgBand = band
+  }
+  return detectCfgCache
+}
 const wakeLock = new WakeLockKeeper(() => {
   store.dispatch({ type: 'wakeLockFailed' })
   toast(TEXT.wakeLockFailed)
@@ -219,6 +244,7 @@ const ui = mountUi(
     onCopyLink: () => void copyText(location.href, TEXT.linkCopied, TEXT.linkCopyFailed),
     onToggleClicks: () => updateSettings({ clicks: !store.get().settings.clicks }),
     onToggleHaptics: () => updateSettings({ haptics: !store.get().settings.haptics }),
+    onBand: (lo, hi) => updateSettings({ bandHz: [lo, hi] }),
     onPanel,
     onScanClear: () => {
       if (session?.radar) clearRadar(session.radar)
@@ -290,7 +316,7 @@ function beginCapture(via: 'start' | 'retry'): void {
       mic: res.mic,
       clicker,
       engine: makeEngine(ctx, res.mic.stream, clicker),
-      detector: createDetector(CONFIG, { excludeHz: activeExclusions() }),
+      detector: createDetector(detectCfg(), { excludeHz: activeExclusions() }),
       hunt: null,
       carrierHz: null,
       radar: null,
@@ -400,7 +426,7 @@ function onFrame(raw: Frame): void {
   lastRmsDb = frame.rmsDb
   const kind = store.get().screen.kind
   if (kind === 'listening' && s.detector) {
-    const lock = detectStep(s.detector, frame, CONFIG)
+    const lock = detectStep(s.detector, frame, detectCfg())
     if (lock) onLock(s, lock, frame.tMs)
   } else if ((kind === 'locked' || kind === 'hunting') && s.hunt) {
     handleHuntEvents(s, huntStep(s.hunt, frame, CONFIG))
@@ -545,7 +571,8 @@ function onHeardIt(): void {
   const kind = store.get().screen.kind
   const t = now()
   if (kind === 'listening' && s.detector) {
-    const lock = lockFromRecent(s.detector, t, CONFIG.heardItWindowMs, CONFIG)
+    const cfg = detectCfg()
+    const lock = lockFromRecent(s.detector, t, cfg.heardItWindowMs, cfg)
     if (lock) onLock(s, lock, t)
     else toast(TEXT.heardNothingListening)
     return
@@ -561,7 +588,7 @@ function onHeardIt(): void {
 function onUseNow(): void {
   const s = session
   if (!s?.detector || store.get().screen.kind !== 'listening') return
-  const lock = lockFromPending(s.detector, now(), CONFIG)
+  const lock = lockFromPending(s.detector, now(), detectCfg())
   if (lock) onLock(s, lock, now())
 }
 
@@ -581,7 +608,7 @@ function restartListening(): void {
   const s = session
   if (!s) return
   s.hunt = null
-  s.detector = createDetector(CONFIG, { excludeHz: activeExclusions() })
+  s.detector = createDetector(detectCfg(), { excludeHz: activeExclusions() })
   s.clicker.setRate(0)
   followLock(s, null, null)
   lastPendingKey = ''
@@ -761,7 +788,7 @@ function activeExclusions(): number[] {
   return exclusions.map((e) => e.hz)
 }
 
-function updateSettings(patch: { clicks?: boolean; haptics?: boolean }): void {
+function updateSettings(patch: Partial<Settings>): void {
   store.dispatch({ type: 'settings', patch })
   const settings = store.get().settings
   saveSettings(settings)
@@ -1106,7 +1133,7 @@ function sampleLiveRadar(s: Session, state: AppState): void {
 function updatePending(s: Session, t: number): void {
   if (!s.detector || t - lastPendingCheckMs < 200) return
   lastPendingCheckMs = t
-  const p: PendingBeep | null = pendingBeep(s.detector, t, CONFIG)
+  const p: PendingBeep | null = pendingBeep(s.detector, t, detectCfg())
   const key = p ? `${Math.round(p.f0Hz)}|${p.sightings}|${Math.round(p.heardAtMs)}` : ''
   if (key === lastPendingKey) return
   lastPendingKey = key

@@ -34,6 +34,15 @@ export interface Config {
    * gadgets and appliance alarms beep far higher, and phone microphones still hear 12 kHz well.
    */
   readonly searchBandHz: readonly [number, number]
+  /**
+   * Widest range the Listening range sliders can cover (Hz). The person narrows the search band
+   * within it (Settings.bandHz, default searchBandHz) to shut out sounds at other pitches.
+   */
+  readonly bandLimitsHz: readonly [number, number]
+  /** The highest pitch of the Listening range must be at least this far above the lowest. */
+  readonly bandMinSpanHz: number
+  /** Step of the Listening range sliders (Hz); a band is rounded to it. */
+  readonly bandStepHz: number
   /** Local noise floor = median of bins within +-floorHalfBins, excluding +-floorGuardBins around the peak. */
   readonly floorHalfBins: number
   readonly floorGuardBins: number
@@ -377,6 +386,9 @@ export const CONFIG: Config = Object.freeze({
   frameGapAbortMs: 150,
 
   searchBandHz: [1500, 12_000] as const,
+  bandLimitsHz: [500, 16_000] as const,
+  bandMinSpanHz: 500,
+  bandStepHz: 100,
   floorHalfBins: 24,
   floorGuardBins: 3,
   bandBins: 3,

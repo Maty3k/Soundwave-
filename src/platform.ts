@@ -3,7 +3,8 @@
  * settings, the screen wake lock, the vibration scheduler and visibility events.
  * Every browser API is feature-detected; nothing here throws on a missing API.
  */
-import type { Config } from './config.ts'
+import { CONFIG, type Config } from './config.ts'
+import { roundHz } from './band.ts'
 import type { Capabilities, Settings } from './types.ts'
 import { headingMaybeSupported } from './orientation.ts'
 
@@ -75,14 +76,32 @@ export function readQueryFlags(search: string): QueryFlags {
 /** localStorage key of the persisted settings. */
 export const SETTINGS_KEY = 'soundwave.settings.v1'
 
-/** Clicks and haptics both on. */
-export const DEFAULT_SETTINGS: Settings = Object.freeze({ clicks: true, haptics: true })
+/** Clicks and haptics both on; the Listening range is the default search band. */
+export const DEFAULT_SETTINGS: Settings = Object.freeze({ clicks: true, haptics: true, bandHz: CONFIG.searchBandHz })
 
 /**
- * Settings from their stored JSON. Tolerant: null, invalid JSON, a non-object or a field that is
- * not a boolean falls back to the default for that field. Unknown fields are dropped. Pure.
+ * A stored Listening range, or null when it is not one: it must be an array of two numbers which,
+ * rounded to cfg.bandStepHz the way the sliders and the reducer round them (roundHz), lie within
+ * cfg.bandLimitsHz and are at least cfg.bandMinSpanHz apart. An out-of-range band is not clamped:
+ * a value this app never wrote is not trusted. NaN and the infinities fail the range checks.
  */
-export function parseSettings(raw: string | null): Settings {
+function parseBand(v: unknown, cfg: Config): readonly [number, number] | null {
+  if (!Array.isArray(v) || v.length !== 2) return null
+  const [rawLo, rawHi] = v as [unknown, unknown]
+  if (typeof rawLo !== 'number' || typeof rawHi !== 'number') return null
+  const lo = roundHz(rawLo, cfg)
+  const hi = roundHz(rawHi, cfg)
+  const [min, max] = cfg.bandLimitsHz
+  if (!(lo >= min) || !(hi <= max) || !(hi - lo >= cfg.bandMinSpanHz)) return null
+  return [lo, hi]
+}
+
+/**
+ * Settings from their stored JSON. Tolerant: null, invalid JSON, a non-object, a field that is not
+ * a boolean or a Listening range that is not a valid band (parseBand) falls back to the default
+ * for that field. Unknown fields are dropped. Pure.
+ */
+export function parseSettings(raw: string | null, cfg: Config = CONFIG): Settings {
   if (raw === null) return { ...DEFAULT_SETTINGS }
   let v: unknown
   try {
@@ -91,10 +110,11 @@ export function parseSettings(raw: string | null): Settings {
     return { ...DEFAULT_SETTINGS }
   }
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return { ...DEFAULT_SETTINGS }
-  const o = v as { readonly clicks?: unknown; readonly haptics?: unknown }
+  const o = v as { readonly clicks?: unknown; readonly haptics?: unknown; readonly bandHz?: unknown }
   return {
     clicks: typeof o.clicks === 'boolean' ? o.clicks : DEFAULT_SETTINGS.clicks,
     haptics: typeof o.haptics === 'boolean' ? o.haptics : DEFAULT_SETTINGS.haptics,
+    bandHz: parseBand(o.bandHz, cfg) ?? DEFAULT_SETTINGS.bandHz,
   }
 }
 
@@ -110,9 +130,9 @@ export function loadSettings(): Settings {
 /** Persist settings; silently does nothing when storage is missing, blocked or full. */
 export function saveSettings(s: Settings): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ clicks: s.clicks, haptics: s.haptics }))
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ clicks: s.clicks, haptics: s.haptics, bandHz: [s.bandHz[0], s.bandHz[1]] }))
   } catch {
-    // Private mode, blocked storage or quota: the toggles just will not persist.
+    // Private mode, blocked storage or quota: the toggles and the range just will not persist.
   }
 }
 
