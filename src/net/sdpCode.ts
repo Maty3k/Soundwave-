@@ -1,9 +1,9 @@
 /**
- * Compact pairing codes. Two devices connect over WebRTC without any server: the SDP offer and
- * answer are carried by the user as QR codes, so they must be tiny. A data-channel-only session
- * only needs the ICE credentials, the DTLS fingerprint, the DTLS role and the UDP candidates; this
- * module squeezes those into about 90 bytes ('SW1.' + base64url) and rebuilds a complete SDP that
- * Chrome, Firefox and Safari accept from them.
+ * Compact pairing codes. Two devices connect over WebRTC without a signalling server: the SDP
+ * offer and answer are carried by the user as QR codes, so they must be tiny. A data-channel-only
+ * session only needs the ICE credentials, the DTLS fingerprint, the DTLS role and the UDP
+ * candidates; this module squeezes those into about 90 bytes ('SW1.' + base64url) and rebuilds a
+ * complete SDP that Chrome, Firefox and Safari accept from them.
  *
  * Pure: no DOM or WebRTC APIs.
  */
@@ -309,7 +309,11 @@ function candidateRank(c: CompactCandidate): number {
 /**
  * The candidates worth putting in a pairing code, at most `max`: duplicates dropped, host before
  * the other types, and within each type IPv4, then mDNS names, then IPv6, with link-local
- * addresses (169.254/16, fe80::/10) last, keeping the browser's order within each class.
+ * addresses (169.254/16, fe80::/10) last, keeping the browser's order within each class. When
+ * `max` is 2 or more, the best non-host candidate (the server-reflexive one from the STUN lookup,
+ * the only one that works across networks) always makes it in: it takes the last slot from a host
+ * candidate when the host candidates alone would fill the code, as they do on a laptop with
+ * virtual adapters.
  */
 export function pickCandidates(candidates: readonly CompactCandidate[], max: number): CompactCandidate[] {
   const seen = new Set<string>()
@@ -320,11 +324,14 @@ export function pickCandidates(candidates: readonly CompactCandidate[], max: num
     seen.add(key)
     unique.push(c)
   }
-  return unique
+  const ranked = unique
     .map((c, i) => ({ c, i, r: candidateRank(c) }))
     .sort((a, b) => a.r - b.r || a.i - b.i)
-    .slice(0, Math.max(0, max))
     .map((x) => x.c)
+  const limit = Math.max(0, max)
+  const bestOther = ranked.findIndex((c) => c.typ !== 'host')
+  if (limit >= 2 && bestOther >= limit) return [...ranked.slice(0, limit - 1), ranked[bestOther]!]
+  return ranked.slice(0, limit)
 }
 
 // ---- Binary layout -----------------------------------------------------------------------------
@@ -452,13 +459,15 @@ export function encodeCode(c: CompactSdp): string {
 /**
  * The pairing code of `c` with its most useful candidates (pickCandidates order): at most
  * maxCandidates, and fewer while the code is longer than maxChars, so the QR code stays easy to
- * scan (at least one candidate is kept when there is any). Throws like encodeCode.
+ * scan (at least one candidate is kept when there is any). Each shorter choice is pickCandidates'
+ * own, so the across-network candidate stays in the code as long as it keeps 2 or more. Throws
+ * like encodeCode.
  */
 export function encodeCodeWithin(c: CompactSdp, maxCandidates: number, maxChars: number): string {
   const picked = pickCandidates(c.candidates, maxCandidates)
   let code = encodeCode({ ...c, candidates: picked })
   for (let n = picked.length - 1; n >= 1 && code.length > maxChars; n--) {
-    code = encodeCode({ ...c, candidates: picked.slice(0, n) })
+    code = encodeCode({ ...c, candidates: pickCandidates(c.candidates, n) })
   }
   return code
 }

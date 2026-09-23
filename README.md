@@ -4,7 +4,7 @@
 
 Soundwave helps you find where a mystery beep is coming from: a smoke detector's low-battery chirp, a UPS, a fridge alarm, a forgotten gadget. Pure beeps are nearly impossible to locate by ear, and a single microphone cannot hear direction, so Soundwave plays hot/cold: it locks onto the beep's exact frequency, then tells you whether each chirp is louder or quieter than the last one while you walk around. On phones, a direction scan adds a radar that uses your body as a shield to show the loudest side.
 
-Everything runs in your browser, and after the first visit it also works offline: the app keeps its own files on the device, so an installed Soundwave opens without a connection. Audio is analysed live and never recorded, stored or uploaded. After the page has loaded it talks to no server; the only network traffic is between your own devices when you pair listening stations (see below), and even then only loudness numbers are exchanged, never audio.
+Everything runs in your browser, and after the first visit it also works offline: the app keeps its own files on the device, so an installed Soundwave opens without a connection. Audio is analysed live and never recorded, stored or uploaded. After the page has loaded it talks to no server, with one exception: when you pair listening stations, each device asks a public address server (STUN, run by Google) for its own address, so that two devices on different networks can find each other, and the browser may repeat that small request now and then while they stay connected. That discloses the device's IP address to that server and nothing else. Apart from that, the only network traffic is between your own devices when you pair listening stations (see below), and even then only loudness numbers are exchanged, never audio. No audio or readings ever go to any server.
 
 ## How to use it
 
@@ -36,7 +36,7 @@ The radar is drawn from the phone's point of view: up is where the phone points,
 
 To pinpoint the beep faster, let several listeners compare every chirp:
 
-- **Stations.** On another phone or laptop, open the same page and choose **Use this device as a station**, give it a name such as "Kitchen", and leave it in another room. On your main phone, open **Stations**, tap **Add a phone** and let the station scan the QR code (or copy, share and paste the code). The station then shows a reply code for the main phone to scan or paste. Both devices must be on the same Wi-Fi. They connect directly to each other (WebRTC, no server, no account) and exchange only loudness numbers.
+- **Stations.** On another phone or laptop, open the same page and choose **Use this device as a station**, give it a name such as "Kitchen", and leave it in another room. On your main phone, open **Stations**, tap **Add a phone** and let the station scan the QR code (or copy, share and paste the code). The station then shows a reply code for the main phone to scan or paste. The same Wi-Fi works best. Across different networks the public address lookup lets them find each other, but some mobile networks block the connection. They connect directly to each other (WebRTC, no relay server, no account) and exchange only loudness numbers.
 - **Extra microphones.** A laptop with several microphones (for example USB microphones on long cables) can add them under **Add a microphone**. iPhones and Safari record from one microphone at a time, and Android phones usually refuse a second one, so this is mainly for laptops.
 
 On every chirp the Stations tab shows which listener heard it loudest, for example "Loudest: Kitchen, 12 dB louder than this phone". Different devices have different microphones: put them side by side and tap **Calibrate** once before spreading them out.
@@ -112,6 +112,7 @@ Phones cannot resolve Herd's local names, and the corporate firewall blocks LAN 
 - Soundwave listens for beeps between 1,500 and 12,000 Hz. A very faint beep does not count while listening, so that microphone noise is not taken for one; above 6,000 Hz a beep has to stand out a little more still. If nothing shows after a beep you could hear, move closer and wait for the next one.
 - Scanning a pairing QR code needs a camera. Chrome on Android, macOS and ChromeOS use their built-in QR detector; other browsers load a small bundled decoder (qr by Paul Miller) the first time they scan. Without a camera, use Copy code or Share and paste the code on the other device.
 - Station pairing has been tested between Chrome and Edge instances. Firefox and Safari as stations are untested.
+- Pairing across different networks depends on both networks allowing a direct connection. There is no relay server, so some mobile carriers and strict firewalls block it; use the same Wi-Fi or a phone hotspot instead.
 
 ### Tuning
 

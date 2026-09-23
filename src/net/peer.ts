@@ -1,7 +1,12 @@
 /**
  * WebRTC data channel between the hub and a station, with the user as the signalling channel:
  * the hub shows an offer code (QR), the station scans it and shows an answer code, the hub scans
- * that. No server, no STUN / TURN: only host candidates, so both devices must share a network.
+ * that. No signalling server and no TURN relay. The one outside request is a STUN lookup
+ * (cfg.iceServers) while a pairing code is being prepared: it tells the device its public address
+ * so that the code also works across networks, and the STUN server sees the device's IP address
+ * and nothing else (the browser may repeat the lookup now and then while connected). When no STUN
+ * server answers in time the code carries the host candidates alone, and both devices must share
+ * a network, as before.
  *
  * Both sides open the same pre-negotiated channel (id 0), so no in-band channel announcement is
  * needed. Messages are JSON; the pure parts (codes, SDP) live in sdpCode.ts.
@@ -124,10 +129,11 @@ export function peerSupported(): boolean {
   return typeof (globalThis as { RTCPeerConnection?: unknown }).RTCPeerConnection === 'function'
 }
 
-function newPeerConnection(): RTCPeerConnection {
+/** A connection that gathers host candidates and, through cfg.iceServers, the public address. */
+function newPeerConnection(cfg: Config): RTCPeerConnection {
   if (!peerSupported()) throw new PairingError(ERR_UNSUPPORTED)
   try {
-    return new RTCPeerConnection({ iceServers: [] })
+    return new RTCPeerConnection({ iceServers: cfg.iceServers.map((urls) => ({ urls })) })
   } catch {
     throw new PairingError(ERR_UNSUPPORTED)
   }
@@ -285,29 +291,57 @@ class Link implements PeerLink {
 }
 
 /**
- * Resolve when ICE gathering completes (or the null candidate arrives); after timeoutMs resolve
- * anyway and use what was gathered so far. When not one UDP candidate has arrived by then (a busy
- * device still registering its mDNS name), wait one more timeoutMs before giving up: an empty
- * result is reported to the user as "no network".
+ * Resolve when ICE gathering has what a pairing code needs, at the latest after timeoutMs (the
+ * candidates gathered so far are used then):
+ * - gathering completes (or the null candidate arrives);
+ * - a public (srflx) candidate arrives: the STUN lookup worked, so the code works across networks;
+ * - a UDP host candidate is in and every STUN server in stunUrls has reported an error (no
+ *   internet, blocked DNS or firewall): no public address will come, so do not wait for one;
+ * - a UDP host candidate is in and stunGraceMs has passed without a public one (STUN packets
+ *   dropped silently). Without STUN servers there is no grace wait: gathering completes by itself.
+ * When not one UDP candidate has arrived by timeoutMs (a busy device still registering its mDNS
+ * name), wait one more timeoutMs before giving up: an empty result is reported to the user as
+ * "no network". Exported for the tests.
  */
-function gathered(pc: RTCPeerConnection, timeoutMs: number): Promise<void> {
+export function gathered(pc: RTCPeerConnection, timeoutMs: number, stunGraceMs: number, stunUrls: readonly string[]): Promise<void> {
   if (pc.iceGatheringState === 'complete') return Promise.resolve()
   return new Promise((resolve) => {
     const wait = Math.max(0, timeoutMs)
     let usable = false
     let extended = false
+    let graceTimer: ReturnType<typeof setTimeout> | null = null
+    const failed = new Set<string>()
     const done = (): void => {
       clearTimeout(timer)
+      if (graceTimer !== null) clearTimeout(graceTimer)
       pc.removeEventListener('icegatheringstatechange', onState)
       pc.removeEventListener('icecandidate', onCandidate)
+      pc.removeEventListener('icecandidateerror', onError)
       resolve()
     }
+    const allStunFailed = (): boolean => stunUrls.length > 0 && stunUrls.every((u) => failed.has(u))
     const onState = (): void => {
       if (pc.iceGatheringState === 'complete') done()
     }
     const onCandidate = (e: RTCPeerConnectionIceEvent): void => {
-      if (e.candidate === null) done()
-      else if (/ udp /i.test(e.candidate.candidate)) usable = true
+      if (e.candidate === null) {
+        done()
+        return
+      }
+      const line = e.candidate.candidate
+      if (!/ udp /i.test(line)) return
+      if (/ typ srflx/i.test(line)) {
+        done()
+        return
+      }
+      if (usable) return
+      usable = true
+      if (allStunFailed()) done()
+      else if (stunUrls.length > 0) graceTimer = setTimeout(done, Math.max(0, stunGraceMs))
+    }
+    const onError = (e: RTCPeerConnectionIceErrorEvent): void => {
+      if (typeof e.url === 'string' && e.url !== '') failed.add(e.url)
+      if (usable && allStunFailed()) done()
     }
     const onTimeout = (): void => {
       if (usable || extended) {
@@ -320,6 +354,7 @@ function gathered(pc: RTCPeerConnection, timeoutMs: number): Promise<void> {
     let timer = setTimeout(onTimeout, wait)
     pc.addEventListener('icegatheringstatechange', onState)
     pc.addEventListener('icecandidate', onCandidate)
+    pc.addEventListener('icecandidateerror', onError)
   })
 }
 
@@ -471,16 +506,18 @@ class HubOffer implements Offer {
 /**
  * Hub side: start a pairing. Resolves once ICE gathering has finished (or after
  * cfg.pairingGatherTimeoutMs with what was gathered; twice that when nothing was) with the offer
- * code to show. Rejects with a user-presentable Error without WebRTC or without any network
+ * code to show. Gathering asks the STUN servers in cfg.iceServers for this device's public
+ * address, the only request that goes to an outside server; on the same network the code works
+ * without it. Rejects with a user-presentable Error without WebRTC or without any network
  * candidate. The caller must either get a link from accept() or call cancel(), which releases the
  * connection.
  */
 export async function createOffer(cfg: Config): Promise<Offer> {
-  const pc = newPeerConnection()
+  const pc = newPeerConnection(cfg)
   try {
     const link = new Link(pc, pc.createDataChannel(CHANNEL_LABEL, CHANNEL_INIT))
     await pc.setLocalDescription(await pc.createOffer())
-    await gathered(pc, cfg.pairingGatherTimeoutMs)
+    await gathered(pc, cfg.pairingGatherTimeoutMs, cfg.stunGraceMs, cfg.iceServers)
     const local = localCode(pc, 'offer', null)
     return new HubOffer(local.code, offerTag(local.compact), pc, link)
   } catch (err) {
@@ -492,14 +529,15 @@ export async function createOffer(cfg: Config): Promise<Offer> {
 /**
  * Station side: answer a hub's offer code. Resolves as soon as the answer code is ready (to show
  * to the hub) with the link promise, which resolves when the channel opens and rejects after 60 s
- * or on cancel(). Rejects with a user-presentable Error on a bad offer code, without WebRTC or
- * without any network candidate. A caller that abandons the answer before it connects should call
- * cancel(), which releases the connection at once.
+ * or on cancel(). Preparing the code includes the same STUN lookup as createOffer. Rejects with a
+ * user-presentable Error on a bad offer code, without WebRTC or without any network candidate. A
+ * caller that abandons the answer before it connects should call cancel(), which releases the
+ * connection at once.
  */
 export async function answerOffer(offerCode: string, cfg: Config): Promise<Answer> {
   const offer = decodeUserCode(offerCode)
   if (offer.type !== 'offer') throw new PairingError(ERR_STATION_CODE)
-  const pc = newPeerConnection()
+  const pc = newPeerConnection(cfg)
   let link: Link
   let code: string
   try {
@@ -510,7 +548,7 @@ export async function answerOffer(offerCode: string, cfg: Config): Promise<Answe
       throw new PairingError(ERR_OFFER_REJECTED)
     }
     await pc.setLocalDescription(await pc.createAnswer())
-    await gathered(pc, cfg.pairingGatherTimeoutMs)
+    await gathered(pc, cfg.pairingGatherTimeoutMs, cfg.stunGraceMs, cfg.iceServers)
     code = localCode(pc, 'answer', offerTag(offer)).code
   } catch (err) {
     closeQuietly(pc)

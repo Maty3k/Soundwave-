@@ -324,6 +324,22 @@ export interface Config {
   readonly stationPingKeep: number
   /** Pairing gives up waiting for ICE gathering after this long. */
   readonly pairingGatherTimeoutMs: number
+  /**
+   * STUN servers ('stun:host:port' URLs) that a device asks for its own public address while it
+   * prepares a pairing code, so that two devices on different networks can find each other; the
+   * browser may repeat that request now and then while the devices stay connected. This is the
+   * one request the app makes to an outside server: that server sees the device's IP address and
+   * nothing else; no readings or audio go anywhere. Pairing on the same network works without it,
+   * and still does when no server answers in time. An empty array means same-network pairing only.
+   */
+  readonly iceServers: readonly string[]
+  /**
+   * Once a local (host) candidate is in, wait at most this long for the public address from the
+   * STUN servers before the pairing code is made. It ends sooner when a public address arrives or
+   * when every server has reported an error (no internet, blocked DNS or firewall), so on the same
+   * network the code still appears almost at once.
+   */
+  readonly stunGraceMs: number
 
   // ---- Log -----------------------------------------------------------------------------------
   readonly logMaxEntries: number
@@ -485,6 +501,8 @@ export const CONFIG: Config = Object.freeze({
   stationPingMs: 3000,
   stationPingKeep: 8,
   pairingGatherTimeoutMs: 4000,
+  iceServers: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'],
+  stunGraceMs: 1500,
 
   logMaxEntries: 200,
   logNoteMaxLength: 120,

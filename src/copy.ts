@@ -44,7 +44,7 @@ export const COPY = {
       { title: 'Move', text: 'walk between chirps, freeze during them.' },
       { title: 'Follow', text: 'warmer means closer.' },
     ],
-    privacy: 'Nothing leaves your device. Audio is analysed live in your browser and never recorded or uploaded.',
+    privacy: 'No audio leaves your device: it is analysed live in your browser and never recorded or uploaded.',
     start: 'Start listening',
     caption: 'Your browser will ask to use the microphone.',
     station: 'Use this device as a station',
@@ -936,7 +936,8 @@ export const STATIONS_COPY = {
   calibrateHint: 'Put all devices side by side, then wait for one chirp.',
   calibrating: 'Calibrating… waiting for a chirp heard by every device',
   calibrated: 'Calibrated. Now put each device in its room.',
-  privacy: 'Only loudness numbers travel between devices, never audio. They connect directly over your Wi‑Fi.',
+  privacy:
+    "Only loudness numbers travel between devices, never audio. They connect directly to each other. To find each other across networks, each device asks a public address server (run by Google) for its own address; that server sees the device's address and nothing else.",
   pair: {
     step1: 'Add a phone · step 1 of 2',
     step2: 'Add a phone · step 2 of 2',
@@ -957,7 +958,7 @@ export const STATIONS_COPY = {
     connect: 'Connect',
     showCode: 'Show my code again',
     connecting: 'Connecting…',
-    connectingHint: 'Both devices need to be on the same Wi‑Fi.',
+    connectingHint: 'Same Wi‑Fi works best. Across networks it can take longer, and some mobile networks block it.',
     errorTitle: "Couldn't connect",
     errorFallback: 'Something went wrong. Try again.',
     tryAgain: 'Try again',
@@ -988,7 +989,7 @@ export const STATIONS_COPY = {
     step1: 'Step 1 of 2',
     step2: 'Step 2 of 2',
     intro:
-      "Leave this device in another room. It listens at the main phone's frequency and sends only loudness numbers – no audio – over your Wi‑Fi.",
+      "Leave this device in another room. It listens at the main phone's frequency and sends only loudness numbers – no audio – over the network.",
     nameLabel: 'Name shown on the main phone',
     namePlaceholder: 'e.g. Kitchen',
     start: 'Start',

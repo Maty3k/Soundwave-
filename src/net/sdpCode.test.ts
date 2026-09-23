@@ -541,6 +541,27 @@ describe('encodeCodeWithin', () => {
     expect(oneMore.length).toBeGreaterThan(160)
   })
 
+  it('keeps the across-network candidate while trimming to maxChars, as long as 2 or more fit', () => {
+    const srflx: CompactCandidate = { address: '203.0.113.7', port: 50, typ: 'srflx' }
+    const c = sdpWith([...many, srflx])
+    const hosts = pickCandidates(many, CODE_MAX_CANDIDATES)
+    const full = encodeCodeWithin(c, CODE_MAX_CANDIDATES, 10_000)
+    expect(decodeCode(full).candidates).toEqual([...hosts.slice(0, CODE_MAX_CANDIDATES - 1), srflx])
+    // Shorter and shorter limits drop one host candidate at a time; the reflexive one stays until
+    // only one candidate is left, and that one is the best host.
+    let fewest = CODE_MAX_CANDIDATES
+    const counts = new Set<number>()
+    for (let maxChars = full.length - 1; maxChars >= 1; maxChars--) {
+      const kept = decodeCode(encodeCodeWithin(c, CODE_MAX_CANDIDATES, maxChars)).candidates
+      expect(kept.length).toBeLessThanOrEqual(fewest)
+      fewest = kept.length
+      counts.add(kept.length)
+      if (kept.length >= 2) expect(kept).toEqual([...hosts.slice(0, kept.length - 1), srflx])
+      else expect(kept).toEqual([hosts[0]])
+    }
+    expect([...counts].sort()).toEqual([1, 2, 3, 4, 5])
+  })
+
   it('keeps one candidate even when the code is still too long, and carries the answer tag', () => {
     const c = sdpWith([host('a-rather-long-name-for-a-single-mdns-host.local'), host('192.168.0.9')], {
       type: 'answer',
@@ -586,7 +607,8 @@ describe('pickCandidates', () => {
       host('10.0.0.2', 6),
     ]
     expect(pickCandidates(cands, 10).map((c) => c.port)).toEqual([5, 6, 4, 3, 2, 1])
-    expect(pickCandidates(cands, 3).map((c) => c.port)).toEqual([5, 6, 4])
+    // With room for 2 or more, the reflexive candidate keeps the last slot (see the tests below).
+    expect(pickCandidates(cands, 3).map((c) => c.port)).toEqual([5, 6, 1])
     expect(pickCandidates(cands, 0)).toEqual([])
     expect(pickCandidates([], 5)).toEqual([])
   })
@@ -594,5 +616,35 @@ describe('pickCandidates', () => {
   it('puts link-local IPv4 (169.254/16) with the link-local addresses', () => {
     const cands: CompactCandidate[] = [host('169.254.10.20', 1), host('fe80::2', 2), host('2001:db8::5', 3), host('192.168.0.4', 4)]
     expect(pickCandidates(cands, 10).map((c) => c.port)).toEqual([4, 3, 1, 2])
+  })
+
+  /** A laptop with virtual adapters: more host candidates than a code carries. */
+  const manyHosts: CompactCandidate[] = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => host(`192.168.0.${n}`, n))
+  const srflx: CompactCandidate = { address: '203.0.113.7', port: 50, typ: 'srflx' }
+
+  it('keeps the best non-host candidate when host candidates alone would fill the code', () => {
+    // The reflexive address from the STUN lookup is the only one that works across networks: it
+    // takes the last slot, and the best of several (browser order) is the one kept.
+    const later: CompactCandidate = { address: '198.51.100.9', port: 51, typ: 'srflx' }
+    expect(pickCandidates([...manyHosts, srflx, later], CODE_MAX_CANDIDATES).map((c) => c.port)).toEqual([1, 2, 3, 4, 5, 50])
+    expect(pickCandidates([srflx, ...manyHosts], CODE_MAX_CANDIDATES).map((c) => c.port)).toEqual([1, 2, 3, 4, 5, 50])
+    expect(pickCandidates([...manyHosts, srflx], 2).map((c) => c.port)).toEqual([1, 50])
+  })
+
+  it('leaves the order alone when the non-host candidate fits anyway', () => {
+    const cands: CompactCandidate[] = [srflx, host('fe80::1', 2), host('192.168.0.1', 1)]
+    expect(pickCandidates(cands, CODE_MAX_CANDIDATES).map((c) => c.port)).toEqual([1, 2, 50])
+    expect(pickCandidates(cands, 3).map((c) => c.port)).toEqual([1, 2, 50])
+    expect(pickCandidates([...manyHosts.slice(0, 5), srflx], CODE_MAX_CANDIDATES).map((c) => c.port)).toEqual([1, 2, 3, 4, 5, 50])
+  })
+
+  it('keeps the best host alone when max is 1', () => {
+    expect(pickCandidates([srflx, host('fe80::1', 2), host('192.168.0.1', 1)], 1).map((c) => c.port)).toEqual([1])
+    expect(pickCandidates([...manyHosts, srflx], 1)).toEqual([manyHosts[0]])
+  })
+
+  it('changes nothing when every candidate is a host', () => {
+    expect(pickCandidates(manyHosts, CODE_MAX_CANDIDATES)).toEqual(manyHosts.slice(0, CODE_MAX_CANDIDATES))
+    expect(pickCandidates(manyHosts, 2)).toEqual(manyHosts.slice(0, 2))
   })
 })
