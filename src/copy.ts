@@ -26,6 +26,7 @@ import type {
 } from './types.ts'
 import { direction8, relativeBearing, type Direction8 } from './dsp/radar.ts'
 import type { Comparison, ComparisonEntry, ListenerKind, ListenerStatus, ListenerView, StationStep } from './types.ts'
+import type { CandidateCount, PairDiag } from './net/peer.ts'
 
 /** Real minus sign (U+2212) used by every signed number on the main screens. */
 export const MINUS = '\u2212'
@@ -666,10 +667,25 @@ function chirpRow(c: Chirp): string {
   ].join('')
 }
 
+/** '1 local + 1 public': the candidates one side's pairing code carries. */
+function candidateCountText(c: CandidateCount): string {
+  return `${c.host} local + ${c.public} public`
+}
+
+/**
+ * Pairing diagnostics in one line: 'mine 1 local + 1 public · theirs 2 local + 1 public · ice
+ * checking' (theirs '?' until the other device's code is known).
+ */
+function pairDiagText(d: PairDiag): string {
+  const theirs = d.theirs === null ? '?' : candidateCountText(d.theirs)
+  return `mine ${candidateCountText(d.mine)} · theirs ${theirs} · ice ${d.ice}`
+}
+
 /**
  * Plain-text diagnostics for the ?debug panel, one fact per line: mic diag (device label, track and
- * context sample rates, EC/NS/AGC), the Listening range, lock, f0, current level / band floor / SNR (dB), warmth,
- * holdActive, missed chirps, and a table of the last chirps (dB, SNR dB, duration ms, clipped, tainted %).
+ * context sample rates, EC/NS/AGC), the Listening range, the pairing in progress (hub or station
+ * side), lock, f0, current level / band floor / SNR (dB), warmth, holdActive, missed chirps, and a
+ * table of the last chirps (dB, SNR dB, duration ms, clipped, tainted %).
  */
 export function debugText(state: AppState): string {
   const lines: string[] = [`screen   ${state.screen.kind}`]
@@ -688,6 +704,8 @@ export function debugText(state: AppState): string {
   }
   lines.push(`mic lvl  ${num(state.micLevel, 2)}`)
   lines.push(`band     ${bandText(state.settings.bandHz[0], state.settings.bandHz[1])}`)
+  const diag = state.stations?.pairing.diag ?? state.stationMode?.diag
+  if (diag !== undefined) lines.push(`pair     ${pairDiagText(diag)}`)
   const lock = state.lock
   if (lock !== null) {
     lines.push(`lock     ${num(lock.f0Hz)} Hz, ${lock.mode}, ${lock.reason}, SNR ${num(lock.snrDb)} dB`)
@@ -1006,6 +1024,8 @@ export const STATIONS_COPY = {
     answerHelp: 'On the main phone, tap Scan their reply and point it at this code.',
     answerQrLabel: 'Reply code',
     answerText: 'Reply code as text',
+    /** Under the reply code: across networks it is replaced every stationAnswerRefreshMs while the station waits. */
+    refreshNote: 'The code may refresh while it waits. Scan the one on screen.',
     waitingForHub: 'Waiting for the main phone to connect…',
     startOver: 'Start over',
     waitingLock: 'Waiting for the main phone to lock onto the beep',

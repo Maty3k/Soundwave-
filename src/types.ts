@@ -2,6 +2,7 @@
  * Types shared across modules. DSP modules (src/dsp) may import from here but never from DOM
  * or Web Audio code. Module-private state types (DetectorState, HuntState) live in their modules.
  */
+import type { PairDiag } from './net/peer.ts'
 
 // ---- Audio frames ------------------------------------------------------------------------------
 
@@ -282,6 +283,8 @@ export interface PairingView {
   readonly message: string | null
   /** This device can scan QR codes with its camera (BarcodeDetector, or the bundled decoder). */
   readonly canScan: boolean
+  /** Pairing diagnostics (debug panel only) while an offer is open; absent otherwise. */
+  readonly diag?: PairDiag
 }
 
 /** Hub side: everything the Stations panel shows. */
@@ -322,6 +325,8 @@ export interface StationModeView {
   readonly chirpsSent: number
   readonly message: string | null
   readonly canScan: boolean
+  /** Pairing diagnostics (debug panel only) of the reply being shown; absent otherwise. */
+  readonly diag?: PairDiag
 }
 
 // ---- Found it ---------------------------------------------------------------------------------

@@ -5,7 +5,7 @@ import type { Frame, ListenerView, Reading, StationsView } from './types.ts'
 import { StationHub } from './hub.ts'
 import { cleanStationName, LockFollower, StationRuntime } from './stationMode.ts'
 import { ExtraMic, listAudioInputs } from './extraMics.ts'
-import type { LinkState, Offer, PeerLink } from './net/peer.ts'
+import type { LinkState, Offer, PairDiag, PeerLink } from './net/peer.ts'
 import { PROTOCOL_VERSION } from './net/protocol.ts'
 import { createHunt, huntStep } from './dsp/hunt.ts'
 import { iterateFrames, ReferenceAnalyser, synthSignal, toneLevelForSnr, tonePeakDb } from './dsp/synth.ts'
@@ -21,6 +21,9 @@ const LEVEL = toneLevelForSnr(30, NOISE_DB, N)
 /** Station clock minus hub clock in the tests (each device's performance.now() starts at its page load). */
 const STATION_OFFSET_MS = 50_000
 const WINDOW_MS = (N / SR) * 1000
+/** peer.ts's message for a connection that never opened (a non-breaking hyphen in Wi‑Fi, as in the copy). */
+const ERR_CONNECT =
+  "Could not connect. On the same Wi‑Fi, try again. Across networks, scan the reply code as soon as it appears, or put both devices on one phone's hotspot."
 
 // ---- Fakes -------------------------------------------------------------------------------------
 
@@ -85,6 +88,9 @@ function linkedPair(): [FakeLink, FakeLink] {
   return [a, b]
 }
 
+/** What the fakes report as pairing diagnostics. */
+const FAKE_DIAG: PairDiag = { mine: { host: 1, public: 1 }, theirs: { host: 2, public: 1 }, ice: 'checking' }
+
 class FakeOffer implements Offer {
   readonly code: string
   cancelled = false
@@ -96,6 +102,10 @@ class FakeOffer implements Offer {
   constructor(code: string, link: FakeLink) {
     this.code = code
     this.link = link
+  }
+
+  diag(): PairDiag {
+    return FAKE_DIAG
   }
 
   accept(answerCode: string): Promise<PeerLink> {
@@ -205,7 +215,7 @@ describe('StationHub pairing', () => {
     const rig = hubRig()
     rig.hub.addLocalListener('self', 'This phone', 'self')
     await rig.hub.startPairing()
-    expect(rig.view().pairing).toEqual({ step: 'showOffer', offerCode: 'OFFER-1', message: null, canScan: false })
+    expect(rig.view().pairing).toEqual({ step: 'showOffer', offerCode: 'OFFER-1', message: null, canScan: false, diag: FAKE_DIAG })
     rig.hub.setPairStep('pasteAnswer')
     expect(rig.view().pairing.step).toBe('pasteAnswer')
     expect(rig.view().pairing.offerCode).toBe('OFFER-1')
@@ -284,6 +294,26 @@ describe('StationHub pairing', () => {
     hub.cancelPairing()
     expect(hub.view([], true).pairing.step).toBe('idle')
     expect(hub.view([], true).pairing.message).toBeNull()
+  })
+
+  it("carries the offer's pairing diagnostics while the offer is open, and not otherwise", async () => {
+    const rig = hubRig()
+    expect(rig.view().pairing).not.toHaveProperty('diag')
+    await rig.hub.startPairing()
+    expect(rig.view().pairing.diag).toEqual(FAKE_DIAG)
+    const connecting = rig.hub.acceptAnswer('SLOW')
+    expect(rig.view().pairing).toMatchObject({ step: 'connecting', diag: FAKE_DIAG })
+    rig.clock.now += 20_000
+    rig.offers[0]!.failConnection(new Error(ERR_CONNECT))
+    await connecting
+    expect(rig.view().pairing.step).toBe('error')
+    // The failed attempt's diagnostics stay readable on the error step (the debug panel shows them) ...
+    expect(rig.view().pairing.diag).toEqual(FAKE_DIAG)
+    // ... until the pairing is cancelled or started again.
+    rig.hub.cancelPairing()
+    expect(rig.view().pairing).not.toHaveProperty('diag')
+    await rig.hub.startPairing()
+    expect(rig.view().pairing.diag).toEqual(FAKE_DIAG)
   })
 
   it('cancelPairing cancels the open offer; acceptAnswer without one is an error', async () => {
@@ -801,13 +831,14 @@ describe('StationHub edge cases', () => {
     const connecting = rig.hub.acceptAnswer('SLOW')
     expect(rig.view().pairing.step).toBe('connecting')
     rig.clock.now += 20_000 // peer.ts gives up after 20 s without a connection; the offer has ended
-    ended.failConnection(new Error('Could not connect. Are both devices on the same Wi-Fi?'))
+    ended.failConnection(new Error(ERR_CONNECT))
     await connecting
     expect(rig.view().pairing).toEqual({
       step: 'error',
       offerCode: null,
-      message: 'Could not connect. Are both devices on the same Wi-Fi?',
+      message: ERR_CONNECT,
       canScan: false,
+      diag: FAKE_DIAG, // the failed attempt's diagnostics stay readable on the error step
     })
     expect(ended.cancelled).toBe(true)
     // Its code is not shown again and no further answer goes to it.
@@ -913,6 +944,7 @@ describe('StationHub races and untrusted reports', () => {
           // Resolves even after cancel(): the hub must not rely on the rejection.
           accept: () => new Promise<PeerLink>((res) => (resolveLink = res)),
           cancel: () => undefined,
+          diag: () => FAKE_DIAG,
         }),
     })
     await hub.startPairing()
@@ -1047,6 +1079,8 @@ function stationRig(link: FakeLink = new FakeLink()): StationRig {
         cancel: () => {
           rig.cancels++
         },
+        iceConnected: () => false,
+        diag: () => FAKE_DIAG,
       })
     },
   })
@@ -1345,12 +1379,12 @@ describe('StationRuntime edge cases', () => {
     const done = rig.station.acceptOffer('OFFER')
     await flushMicrotasks()
     expect(rig.station.view(true)).toMatchObject({ step: 'showAnswer', answerCode: 'ANSWER-CODE' })
-    rig.rejectLink(new Error('Could not connect. Are both devices on the same Wi-Fi?'))
+    rig.rejectLink(new Error(ERR_CONNECT))
     await done
     expect(rig.station.view(true)).toMatchObject({
       step: 'error',
       answerCode: null,
-      message: 'Could not connect. Are both devices on the same Wi-Fi?',
+      message: ERR_CONNECT,
     })
     rig.station.setStep('scanOffer')
     expect(rig.station.view(true)).toMatchObject({ step: 'scanOffer', message: null })

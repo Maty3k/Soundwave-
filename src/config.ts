@@ -349,6 +349,30 @@ export interface Config {
    * network the code still appears almost at once.
    */
   readonly stunGraceMs: number
+  /**
+   * While a station waits for the main phone to take its reply code, it prepares a fresh reply (a
+   * new connection) this often and shows the new code. ICE expects both sides to start their
+   * connectivity checks within seconds of each other. Here the station has both descriptions the
+   * moment it makes its reply and starts checking the main phone's public address at once, but the
+   * main phone only starts when its user has scanned the reply, often 30-60 s later. libwebrtc
+   * gives up on candidate pairs that get no answer after about 30 s, and the station's router
+   * closes its NAT filter for the main phone's address soon after: by the time the main phone
+   * starts, the station is silent and its network drops the main phone's packets. A fresh reply
+   * keeps the station knocking. On the same network this never mattered (local addresses, no NAT),
+   * and there the main phone answers the reply's checks at once: a reply whose checks are being
+   * answered is not replaced (a second reply knocking at the same time can spoil the main phone's
+   * DTLS handshake), so on one network the code stays put as before.
+   */
+  readonly stationAnswerRefreshMs: number
+  /**
+   * A replaced reply stays valid at most this long after a fresher one took its place, so a code
+   * the main phone scanned just before a refresh still connects (the main phone gives up 20 s
+   * after it takes a reply, so this covers a scan right before the refresh plus that wait). Every
+   * reply also gives up on its own 60 s after its code was made (src/net/peer.ts), which ends the
+   * overlap first when stationAnswerRefreshMs plus this is longer than that: with 25 s and 45 s a
+   * replaced reply lives about 35 s more, still well past the main phone's wait.
+   */
+  readonly stationAnswerOverlapMs: number
 
   // ---- Log -----------------------------------------------------------------------------------
   readonly logMaxEntries: number
@@ -515,6 +539,8 @@ export const CONFIG: Config = Object.freeze({
   pairingGatherTimeoutMs: 4000,
   iceServers: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'],
   stunGraceMs: 1500,
+  stationAnswerRefreshMs: 25_000,
+  stationAnswerOverlapMs: 45_000,
 
   logMaxEntries: 200,
   logNoteMaxLength: 120,

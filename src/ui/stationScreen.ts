@@ -206,6 +206,8 @@ export function createStationScreen(handlers: StationScreenHandlers, _cfg: Confi
         content = [
           para('station__help', S.answerHelp),
           v.answerCode === null ? waitDots() : codeCard(v.answerCode, handlers, S.answerQrLabel, S.answerText),
+          // The runtime replaces the code every stationAnswerRefreshMs (the render key rebuilds this step).
+          para('station__hint', S.refreshNote),
           h('p', { class: 'station__waiting', role: 'status' }, S.waitingForHub),
         ]
         buttons = [button(S.startOver, pairAgain), button(S.stopShort, stop)]

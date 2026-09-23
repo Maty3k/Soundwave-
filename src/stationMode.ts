@@ -202,9 +202,27 @@ function cancelAnswer(answer: Answer): void {
   }
 }
 
+/** Release an answer nobody watches: cancel it, and close its link should it still open. */
+function discardAnswer(answer: Answer): void {
+  cancelAnswer(answer)
+  answer.link.then((l) => l.close()).catch(() => undefined)
+}
+
+/** A reply the station showed until a fresher one replaced it, alive until its overlap timer fires. */
+interface WaitingAnswer {
+  readonly answer: Answer
+  readonly timer: ReturnType<typeof setTimeout>
+}
+
 /**
  * Station side state machine: name -> starting (main opens the mic) -> scanOffer / pasteOffer ->
  * answering -> showAnswer -> connected, with lost / error at the end. Frames go to onFrame.
+ *
+ * While the reply code is shown and the hub does not answer the reply's connectivity checks, a
+ * fresh reply (a new connection to the same offer) replaces it every cfg.stationAnswerRefreshMs
+ * and the replaced one stays alive for cfg.stationAnswerOverlapMs (see Config.stationAnswerRefreshMs
+ * for why). The first reply whose link opens is the connection; every other reply of the attempt
+ * is released then.
  */
 export class StationRuntime {
   private readonly deps: StationDeps
@@ -217,10 +235,16 @@ export class StationRuntime {
   private link: PeerLink | null = null
   private hub: string | null = null
   private calibrating = false
-  /** Increments on every pairing attempt and when one is abandoned; stale async results are discarded. */
+  /** Increments when a pairing attempt ends (connected, failed or abandoned); its late async results are discarded. */
   private seq = 0
-  /** The answer code being shown, until its link opens (cancelled when the attempt is abandoned). */
+  /** The reply being shown (only while step is showAnswer); released when the attempt ends. */
   private pending: Answer | null = null
+  /** Replaced replies still alive for their overlap, oldest first. */
+  private waiting: WaitingAnswer[] = []
+  /** Next reply refresh while the code is shown. */
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null
+  /** Resolves the running acceptOffer() call when its attempt ends. */
+  private settle: (() => void) | null = null
   private disposed = false
   private level = 0
   private lastChirpDb: number | null = null
@@ -281,48 +305,41 @@ export class StationRuntime {
 
   /**
    * Answer the hub's offer code: 'answering' -> 'showAnswer' (the hub scans or pastes the answer
-   * code) -> 'connected' once the data channel opens. Errors -> 'error' with a message. A pairing
-   * attempt still waiting for the hub is abandoned first.
+   * code; a fresh code replaces it every cfg.stationAnswerRefreshMs) -> 'connected' once a data
+   * channel opens. Errors -> 'error' with a message. A pairing attempt still waiting for the hub
+   * is abandoned first. Resolves once the attempt has ended: connected, failed or abandoned.
    */
   async acceptOffer(code: string): Promise<void> {
     if (this.disposed) return
     this.abandonAttempt()
     this.dropLink(true)
     const seq = this.seq
+    const offer = code.trim()
+    const ended = new Promise<void>((resolve) => {
+      this.settle = resolve
+    })
     this.step = 'answering'
     this.answerCode = null
     this.message = null
     this.changed()
     let answer: Answer
     try {
-      const fn = this.deps.answerOffer ?? ((offer: string) => answerOffer(offer, this.deps.cfg))
-      answer = await fn(code.trim())
+      answer = await this.prepareAnswer(offer)
     } catch (err) {
       if (seq === this.seq && !this.disposed) this.fail(errorText(err, 'This code did not work.'))
-      return
+      return ended
     }
     if (seq !== this.seq || this.disposed) {
-      cancelAnswer(answer)
-      answer.link.then((l) => l.close()).catch(() => undefined)
-      return
+      discardAnswer(answer)
+      return ended
     }
     this.pending = answer
     this.step = 'showAnswer'
     this.answerCode = answer.code
     this.changed()
-    let link: PeerLink
-    try {
-      link = await answer.link
-    } catch (err) {
-      if (seq === this.seq && !this.disposed) this.fail(errorText(err, 'The connection failed.'))
-      return
-    }
-    if (seq !== this.seq || this.disposed) {
-      link.close()
-      return
-    }
-    this.pending = null
-    this.attach(link)
+    this.watchLink(answer)
+    this.scheduleRefresh(seq, offer)
+    return ended
   }
 
   /** Raw-audio status of this device's mic, reported to the hub in 'hi'. */
@@ -367,6 +384,8 @@ export class StationRuntime {
 
   /** Snapshot for the station screen. */
   view(canScan: boolean): StationModeView {
+    // A reply exists only while its code is shown: the diagnostics come and go with it.
+    const diag = this.pending === null ? undefined : this.pending.diag()
     return {
       step: this.step,
       name: this.name,
@@ -378,6 +397,7 @@ export class StationRuntime {
       chirpsSent: this.chirpsSent,
       message: this.message,
       canScan,
+      ...(diag === undefined ? {} : { diag }),
     }
   }
 
@@ -389,15 +409,149 @@ export class StationRuntime {
     this.disposed = true
   }
 
-  // ---- Internals ---------------------------------------------------------------------------------
+  // ---- Pairing internals -------------------------------------------------------------------------
 
-  /** Invalidate the running pairing attempt (stale async results are dropped) and release its connection. */
-  private abandonAttempt(): void {
+  /** The injected answerOffer (tests), or peer.ts's with this runtime's config. */
+  private prepareAnswer(offer: string): Promise<Answer> {
+    const fn = this.deps.answerOffer ?? ((o: string) => answerOffer(o, this.deps.cfg))
+    return fn(offer)
+  }
+
+  /**
+   * Wait for a reply's link. The first link of the attempt to open is the connection: it is
+   * attached and every other reply is released. A link that opens after its reply was released
+   * (the overlap ran out, or another reply won) is closed. The rejection of the shown reply ends
+   * the attempt with its message (its 60 s timeout, or the connection failed); that of a replaced
+   * reply only drops it from the waiting list.
+   */
+  private watchLink(answer: Answer): void {
+    answer.link.then(
+      (link) => {
+        if (!this.holds(answer)) {
+          link.close()
+          return
+        }
+        this.endAttempt(answer)
+        this.attach(link)
+      },
+      (err: unknown) => {
+        if (this.pending === answer) {
+          this.pending = null // its link already failed: nothing to cancel
+          this.fail(errorText(err, 'The connection failed.'))
+          return
+        }
+        this.forget(answer)
+      },
+    )
+  }
+
+  /** The reply still belongs to the running attempt: the shown one, or a replaced one within its overlap. */
+  private holds(answer: Answer): boolean {
+    return this.pending === answer || this.waiting.some((w) => w.answer === answer)
+  }
+
+  /** Drop a replaced reply from the waiting list without cancelling it (its link has ended). */
+  private forget(answer: Answer): void {
+    const entry = this.waiting.find((w) => w.answer === answer)
+    if (entry === undefined) return
+    clearTimeout(entry.timer)
+    this.waiting = this.waiting.filter((w) => w !== entry)
+  }
+
+  /** Prepare a fresh reply after cfg.stationAnswerRefreshMs (see refresh). */
+  private scheduleRefresh(seq: number, offer: string): void {
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null
+      void this.refresh(seq, offer)
+    }, this.deps.cfg.stationAnswerRefreshMs)
+  }
+
+  /**
+   * Replace the shown reply with a fresh one for the same offer, so the station keeps sending
+   * connectivity checks that the hub can answer once its user scans the reply (see
+   * Config.stationAnswerRefreshMs). The replaced reply waits on for the overlap (retire). When
+   * the fresh reply cannot be prepared the current code stays and the next tick tries again;
+   * only the shown reply's own failure ends the attempt (watchLink).
+   *
+   * No fresh reply while the hub already answers the shown reply's checks (same network, or a
+   * router that lets them through): that path stays alive by itself, and a second reply would
+   * only hurt. The hub (libwebrtc) answers the checks of every reply and keeps the latest DTLS
+   * ClientHello it gets for when it takes a code; with two replies knocking, that hello may come
+   * from the other reply, and the handshake then fails. The next tick looks again.
+   */
+  private async refresh(seq: number, offer: string): Promise<void> {
+    if (this.pending !== null && this.pending.iceConnected()) {
+      this.scheduleRefresh(seq, offer)
+      return
+    }
+    let answer: Answer
+    try {
+      answer = await this.prepareAnswer(offer)
+    } catch {
+      if (seq === this.seq && !this.disposed) this.scheduleRefresh(seq, offer)
+      return
+    }
+    // The attempt ended meanwhile (connected, failed or abandoned): this reply is not wanted.
+    if (seq !== this.seq || this.disposed) {
+      discardAnswer(answer)
+      return
+    }
+    const previous = this.pending
+    this.pending = answer
+    this.answerCode = answer.code
+    if (previous !== null) this.retire(previous)
+    this.changed()
+    this.watchLink(answer)
+    this.scheduleRefresh(seq, offer)
+  }
+
+  /**
+   * The shown reply was replaced: keep it alive for cfg.stationAnswerOverlapMs, so a hub that
+   * scanned its code just before the refresh still connects, then release it (a link of it that
+   * opens later still is closed by watchLink). A reply that gives up by itself before then (its
+   * own 60 s timeout in peer.ts) is dropped by watchLink's rejection path instead.
+   */
+  private retire(answer: Answer): void {
+    const entry: WaitingAnswer = {
+      answer,
+      timer: setTimeout(() => {
+        this.waiting = this.waiting.filter((w) => w !== entry)
+        cancelAnswer(answer)
+      }, this.deps.cfg.stationAnswerOverlapMs),
+    }
+    this.waiting.push(entry)
+  }
+
+  /**
+   * The attempt ended (connected, failed or abandoned): its late results are stale (seq), the
+   * refreshing stops, every reply but `keep` (the one that connected) is released and the running
+   * acceptOffer() call resolves.
+   */
+  private endAttempt(keep: Answer | null): void {
     this.seq++
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer)
+      this.refreshTimer = null
+    }
     const pending = this.pending
     this.pending = null
-    if (pending !== null) cancelAnswer(pending)
+    if (pending !== null && pending !== keep) cancelAnswer(pending)
+    for (const w of this.waiting) {
+      clearTimeout(w.timer)
+      if (w.answer !== keep) cancelAnswer(w.answer)
+    }
+    this.waiting = []
+    const settle = this.settle
+    this.settle = null
+    settle?.()
   }
+
+  /** Invalidate the running pairing attempt (stale async results are dropped) and release its connections. */
+  private abandonAttempt(): void {
+    this.endAttempt(null)
+  }
+
+  // ---- Link internals ----------------------------------------------------------------------------
 
   private attach(link: PeerLink): void {
     this.link = link
@@ -481,7 +635,7 @@ export class StationRuntime {
   }
 
   private fail(message: string): void {
-    this.pending = null // its link already failed
+    this.endAttempt(null)
     this.dropLink(false)
     this.step = 'error'
     this.answerCode = null

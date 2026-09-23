@@ -32,7 +32,7 @@ import {
 } from './dsp/compare.ts'
 import type { ChirpReport, CompareState, ReportGroup } from './dsp/compare.ts'
 import { createOffer } from './net/peer.ts'
-import type { LinkState, Offer, PeerLink } from './net/peer.ts'
+import type { LinkState, Offer, PairDiag, PeerLink } from './net/peer.ts'
 import { parseHubMessage, parseStationMessage, PROTOCOL_VERSION } from './net/protocol.ts'
 import type { HubMessage, StationMessage } from './net/protocol.ts'
 import { clockSample, estimateOffset, pushClockSample, toHubTime } from './net/clock.ts'
@@ -115,6 +115,8 @@ export class StationHub {
   private pairStep: PairStep = 'idle'
   private pairMessage: string | null = null
   private offer: Offer | null = null
+  /** Diagnostics of the offer that just ended, kept through the 'error' step (debug panel). */
+  private lastDiag: PairDiag | null = null
   /** A link from an accepted answer that has not opened yet. */
   private pendingLink: PeerLink | null = null
   /** Increments on every pairing start / cancel; stale async results are discarded. */
@@ -154,6 +156,7 @@ export class StationHub {
   async startPairing(): Promise<void> {
     if (this.disposed) return
     this.abortPairing()
+    this.lastDiag = null
     const seq = this.pairSeq
     this.pairStep = 'preparing'
     this.pairMessage = null
@@ -254,6 +257,7 @@ export class StationHub {
   /** Abandon the open pairing (offer, or a link still connecting); back to 'idle'. */
   cancelPairing(): void {
     this.abortPairing()
+    this.lastDiag = null
     if (this.pairStep === 'idle' && this.pairMessage === null) return
     this.pairStep = 'idle'
     this.pairMessage = null
@@ -397,6 +401,9 @@ export class StationHub {
         offerCode: showCode ? (this.offer?.code ?? null) : null,
         message: this.pairMessage,
         canScan,
+        // The offer is open while its code is shown and while its answer connects; after a failed
+        // connection its last diagnostics stay readable until the pairing is cancelled or restarted.
+        ...(this.offer !== null ? { diag: this.offer.diag() } : this.pairStep === 'error' && this.lastDiag !== null ? { diag: this.lastDiag } : {}),
       },
       comparison,
       calibrating: this.calibrating,
@@ -590,6 +597,11 @@ export class StationHub {
     const offer = this.offer
     this.offer = null
     if (offer !== null) {
+      try {
+        this.lastDiag = offer.diag()
+      } catch {
+        // Diagnostics are a bonus.
+      }
       try {
         offer.cancel()
       } catch {

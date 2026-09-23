@@ -46,6 +46,23 @@ export interface PeerLink {
   onStateChange: ((state: LinkState) => void) | null
 }
 
+/** How many candidates of each kind a pairing code carries: local (host) addresses and public ones (srflx, prflx, relay). */
+export interface CandidateCount {
+  readonly host: number
+  readonly public: number
+}
+
+/**
+ * Pairing diagnostics for the debug panel: the candidates in this device's code, those in the
+ * other device's code once it is known (null before), and the latest ICE / connection state the
+ * browser reported ('new' before any). Read off the screen when a pairing fails.
+ */
+export interface PairDiag {
+  readonly mine: CandidateCount
+  readonly theirs: CandidateCount | null
+  readonly ice: string
+}
+
 /** Hub side of a pairing in progress. */
 export interface Offer {
   /** Compact offer code to show as a QR code and as text. */
@@ -58,6 +75,8 @@ export interface Offer {
   accept(answerCode: string): Promise<PeerLink>
   /** Abandon the pairing (no effect once accept() has delivered a link). */
   cancel(): void
+  /** Diagnostics snapshot; theirs is known once accept() has taken an answer. */
+  diag(): PairDiag
 }
 
 /** Station side of a pairing in progress. */
@@ -72,6 +91,15 @@ export interface Answer {
   readonly link: Promise<PeerLink>
   /** Abandon the pairing and release the connection at once (no effect once the link is open). */
   cancel(): void
+  /**
+   * True once the hub answers this reply's connectivity checks (ICE connected, the channel may
+   * still be opening): the hub can be reached from here and the checks keep the path alive by
+   * themselves. On the same network this happens within a second or two of the code being made;
+   * across networks it stays false until the hub has taken the code.
+   */
+  iceConnected(): boolean
+  /** Diagnostics snapshot; theirs is the offer this answer was made for. */
+  diag(): PairDiag
 }
 
 const CHANNEL_LABEL = 'soundwave'
@@ -94,9 +122,10 @@ const MAX_BUFFERED_BYTES = 1_000_000
 const ERR_UNSUPPORTED = 'This browser cannot connect to other devices.'
 const ERR_PREPARE = 'Could not prepare the pairing code. Try again.'
 const ERR_NO_NETWORK = 'No network connection found. Connect this device to Wi‑Fi and try again.'
-const ERR_CONNECT = 'Could not connect. Are both devices on the same Wi‑Fi?'
+const ERR_CONNECT =
+  "Could not connect. On the same Wi‑Fi, try again. Across networks, scan the reply code as soon as it appears, or put both devices on one phone's hotspot."
 const ERR_STATION_TIMEOUT =
-  'The main phone did not connect. Scan its code again, and check that both devices are on the same Wi‑Fi.'
+  "The main phone did not connect. Show it the code again as soon as you can. Across networks, put both devices on one phone's hotspot."
 const ERR_CANCELLED = 'Pairing was cancelled.'
 const ERR_ENDED = 'This pairing has ended. Start again.'
 const ERR_HUB_CODE = "That is a main phone's code. Scan the reply code shown on the other phone instead."
@@ -157,6 +186,8 @@ class Link implements PeerLink {
   private readonly dc: RTCDataChannel
   /** Internal state listeners (pairing), independent of the app's onStateChange. */
   private readonly watchers = new Set<(state: LinkState) => void>()
+  /** Latest connectionState / iceConnectionState the browser reported (diagnostics). */
+  private iceState = 'new'
 
   constructor(pc: RTCPeerConnection, dc: RTCDataChannel) {
     this.pc = pc
@@ -177,11 +208,17 @@ class Link implements PeerLink {
    * to the pairing timeouts (20 s on the hub after accept(), 60 s on the station).
    */
   private onPeerState(state: RTCPeerConnectionState | RTCIceConnectionState): void {
+    this.iceState = state
     if (state === 'closed' || (state === 'failed' && this.current === 'open')) this.setState('closed')
   }
 
   get state(): LinkState {
     return this.current
+  }
+
+  /** The latest connectionState / iceConnectionState string seen; 'new' before any. */
+  get ice(): string {
+    return this.iceState
   }
 
   get onMessage(): ((data: unknown) => void) | null {
@@ -358,16 +395,24 @@ export function gathered(pc: RTCPeerConnection, timeoutMs: number, stunGraceMs: 
   })
 }
 
+/** Local (host) and public (any other type: srflx, prflx, relay) candidates in a compact SDP. Exported for the tests. */
+export function countCandidates(c: CompactSdp): CandidateCount {
+  let host = 0
+  for (const cand of c.candidates) if (cand.typ === 'host') host++
+  return { host, public: c.candidates.length - host }
+}
+
 /**
  * The local description in compact form and its pairing code, keeping the best few candidates
  * (at most CODE_MAX_CANDIDATES, fewer when the code would outgrow CODE_MAX_CHARS). An answer
- * carries the tag of the offer it answers.
+ * carries the tag of the offer it answers. `mine` counts the candidates the code carries (what
+ * the other device gets), not every candidate the browser gathered.
  */
 function localCode(
   pc: RTCPeerConnection,
   type: 'offer' | 'answer',
   answersTo: number | null,
-): { readonly code: string; readonly compact: CompactSdp } {
+): { readonly code: string; readonly compact: CompactSdp; readonly mine: CandidateCount } {
   const sdp = pc.localDescription?.sdp
   if (typeof sdp !== 'string' || sdp === '') throw new PairingError(ERR_PREPARE)
   let compact: CompactSdp
@@ -379,7 +424,8 @@ function localCode(
   if (compact.candidates.length === 0) throw new PairingError(ERR_NO_NETWORK)
   try {
     const tagged: CompactSdp = answersTo === null ? compact : { ...compact, answersTo }
-    return { code: encodeCodeWithin(tagged, CODE_MAX_CANDIDATES, CODE_MAX_CHARS), compact }
+    const code = encodeCodeWithin(tagged, CODE_MAX_CANDIDATES, CODE_MAX_CHARS)
+    return { code, compact, mine: countCandidates(decodeCode(code)) }
   } catch {
     throw new PairingError(ERR_PREPARE)
   }
@@ -433,16 +479,24 @@ class HubOffer implements Offer {
   private readonly link: Link
   /** offerTag of this offer: an answer made for it carries the same tag. */
   private readonly tag: number
+  private readonly mine: CandidateCount
+  /** Candidates of the answer taken by accept(); null before. */
+  private theirs: CandidateCount | null = null
   private pending: Promise<PeerLink> | null = null
   private abort: ((err: Error) => void) | null = null
   private cancelled = false
   private delivered = false
 
-  constructor(code: string, tag: number, pc: RTCPeerConnection, link: Link) {
+  constructor(code: string, tag: number, mine: CandidateCount, pc: RTCPeerConnection, link: Link) {
     this.code = code
     this.tag = tag
+    this.mine = mine
     this.pc = pc
     this.link = link
+  }
+
+  diag(): PairDiag {
+    return { mine: this.mine, theirs: this.theirs, ice: this.link.ice }
   }
 
   accept(answerCode: string): Promise<PeerLink> {
@@ -461,6 +515,7 @@ class HubOffer implements Offer {
     if (answer.answersTo !== undefined && answer.answersTo !== this.tag) {
       return Promise.reject(new PairingError(ERR_OTHER_OFFER))
     }
+    this.theirs = countCandidates(answer)
 
     const pending = new Promise<PeerLink>((resolve, reject) => {
       // cancel() rejects directly: operations pending on a closed RTCPeerConnection never settle.
@@ -519,7 +574,7 @@ export async function createOffer(cfg: Config): Promise<Offer> {
     await pc.setLocalDescription(await pc.createOffer())
     await gathered(pc, cfg.pairingGatherTimeoutMs, cfg.stunGraceMs, cfg.iceServers)
     const local = localCode(pc, 'offer', null)
-    return new HubOffer(local.code, offerTag(local.compact), pc, link)
+    return new HubOffer(local.code, offerTag(local.compact), local.mine, pc, link)
   } catch (err) {
     closeQuietly(pc)
     throw userError(err, ERR_PREPARE)
@@ -540,6 +595,7 @@ export async function answerOffer(offerCode: string, cfg: Config): Promise<Answe
   const pc = newPeerConnection(cfg)
   let link: Link
   let code: string
+  let mine: CandidateCount
   try {
     link = new Link(pc, pc.createDataChannel(CHANNEL_LABEL, CHANNEL_INIT))
     try {
@@ -549,7 +605,9 @@ export async function answerOffer(offerCode: string, cfg: Config): Promise<Answe
     }
     await pc.setLocalDescription(await pc.createAnswer())
     await gathered(pc, cfg.pairingGatherTimeoutMs, cfg.stunGraceMs, cfg.iceServers)
-    code = localCode(pc, 'answer', offerTag(offer)).code
+    const local = localCode(pc, 'answer', offerTag(offer))
+    code = local.code
+    mine = local.mine
   } catch (err) {
     closeQuietly(pc)
     throw userError(err, ERR_PREPARE)
@@ -557,6 +615,7 @@ export async function answerOffer(offerCode: string, cfg: Config): Promise<Answe
   let cancelled = false
   // Timing out usually means the hub never took the answer code, or the devices cannot reach each
   // other: a connection that fails while connecting is left to this timeout (see Link.onPeerState).
+  // The station keeps a fresh answer knocking meanwhile (src/stationMode.ts, stationAnswerRefreshMs).
   const linkPromise = whenOpen(link, STATION_CONNECT_TIMEOUT_MS, ERR_STATION_TIMEOUT, () =>
     cancelled ? ERR_CANCELLED : ERR_CONNECT,
   )
@@ -567,5 +626,8 @@ export async function answerOffer(offerCode: string, cfg: Config): Promise<Answe
     cancelled = true
     link.close()
   }
-  return { code, link: linkPromise, cancel }
+  const theirs = countCandidates(offer)
+  const diag = (): PairDiag => ({ mine, theirs, ice: link.ice })
+  const iceConnected = (): boolean => pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed'
+  return { code, link: linkPromise, cancel, iceConnected, diag }
 }

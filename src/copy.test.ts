@@ -60,7 +60,8 @@ import {
   STATIONS_COPY,
   stationTitle,
 } from './copy.ts'
-import type { Comparison, ComparisonEntry, ListenerView, StationStep } from './types.ts'
+import type { Comparison, ComparisonEntry, ListenerView, StationModeView, StationsView, StationStep } from './types.ts'
+import type { PairDiag } from './net/peer.ts'
 import {
   FOUND_COPY,
   formatDuration,
@@ -547,6 +548,37 @@ describe('debugText', () => {
     const narrowed = { ...BLANK, settings: { ...BLANK.settings, bandHz: [8000, 12_000] as const } }
     expect(debugText(narrowed)).toContain('band     8,000–12,000 Hz')
   })
+
+  it('shows the pairing diagnostics of the hub or of the station while a code is out', () => {
+    const diag: PairDiag = { mine: { host: 1, public: 1 }, theirs: { host: 2, public: 1 }, ice: 'checking' }
+    const stations: StationsView = {
+      listeners: [],
+      availableMics: [],
+      pairing: { step: 'showOffer', offerCode: 'SW1.x', message: null, canScan: false, diag },
+      comparison: null,
+      calibrating: false,
+    }
+    expect(debugText({ ...BLANK, stations })).toContain('pair     mine 1 local + 1 public · theirs 2 local + 1 public · ice checking')
+    // Before the answer is known the other side reads '?'.
+    const stationMode: StationModeView = {
+      step: 'showAnswer',
+      name: 'Den',
+      answerCode: 'SW1.y',
+      f0Hz: null,
+      level: 0,
+      lastChirpDb: null,
+      lastChirpAtMs: null,
+      chirpsSent: 0,
+      message: null,
+      canScan: false,
+      diag: { mine: { host: 3, public: 0 }, theirs: null, ice: 'new' },
+    }
+    expect(debugText({ ...BLANK, screen: { kind: 'station' }, stationMode })).toContain('pair     mine 3 local + 0 public · theirs ? · ice new')
+    // No line without a pairing in progress.
+    expect(debugText(BLANK)).not.toContain('pair ')
+    const idle: StationsView = { ...stations, pairing: { step: 'idle', offerCode: null, message: null, canScan: false } }
+    expect(debugText({ ...BLANK, stations: idle })).not.toContain('pair ')
+  })
 })
 
 // ---- Log -----------------------------------------------------------------------------------------
@@ -842,6 +874,10 @@ describe('stations text', () => {
     expect(STATIONS_COPY.privacy).toMatch(/never audio/)
     expect(STATIONS_COPY.station.intro).toMatch(/no audio/)
     expect(STATIONS_COPY.station.privacy).toMatch(/never audio/)
+  })
+
+  it('tells the station user that the reply code refreshes and which one to scan', () => {
+    expect(STATIONS_COPY.station.refreshNote).toBe('The code may refresh while it waits. Scan the one on screen.')
   })
 
   it('tells what to do once the levels are calibrated', () => {

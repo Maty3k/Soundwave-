@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { gathered } from './peer.ts'
+import { countCandidates, gathered } from './peer.ts'
+import type { CompactSdp } from './sdpCode.ts'
 
 const STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']
 const TIMEOUT = 4000
@@ -35,6 +36,31 @@ async function settled(p: Promise<void>): Promise<boolean> {
   await Promise.resolve()
   return done
 }
+
+describe('countCandidates', () => {
+  it('counts host candidates as local and every other type as public', () => {
+    const none: CompactSdp = {
+      type: 'offer',
+      ufrag: 'abcd',
+      pwd: 'p'.repeat(22),
+      fingerprint: new Uint8Array(32),
+      setup: 'actpass',
+      candidates: [],
+    }
+    expect(countCandidates(none)).toEqual({ host: 0, public: 0 })
+    const mixed: CompactSdp = {
+      ...none,
+      candidates: [
+        { address: '192.168.1.5', port: 50000, typ: 'host' },
+        { address: '8b4a2c0e-6f7e-4a1b-9c3d-2e5f6a7b8c9d.local', port: 50001, typ: 'host' },
+        { address: '203.0.113.7', port: 58443, typ: 'srflx' },
+        { address: '203.0.113.9', port: 40000, typ: 'prflx' },
+        { address: '198.51.100.2', port: 3478, typ: 'relay' },
+      ],
+    }
+    expect(countCandidates(mixed)).toEqual({ host: 2, public: 3 })
+  })
+})
 
 describe('gathered', () => {
   let pc: FakePeer
